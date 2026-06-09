@@ -1296,6 +1296,97 @@ div[data-testid="stButton"] button *, div.stButton > button *, button[kind="prim
 .at-code {white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important;} .progress-cell, .expected-progress {min-width: 180px;}
 .meta-result-card {background: #ffffff; border: 1px solid #dfe5ee; border-radius: 18px; padding: 26px 28px; margin-bottom: 18px; box-shadow: 0 10px 28px rgba(15,23,42,0.06);} .meta-result-title {font-size: 24px; font-weight: 950; color: #1e293b; margin-bottom: 20px;} .meta-result-line {font-size: 18px; color: #1e293b; margin: 14px 0;} .meta-progress-bg {width: 100%; height: 26px; border-radius: 999px; background: #cbd5e1; overflow: hidden; margin: 16px 0 18px 0;} .meta-progress-fill {height: 100%; min-width: 44px; border-radius: 999px; color: #ffffff; display: flex; align-items: center; justify-content: center; font-weight: 950; font-size: 15px;} .meta-am-fill {background: #5369df;} .meta-pm-fill {background: #20c997;} .meta-consolidado-fill {background: #ff6b1a;} .meta-form-title {font-size: 28px; font-weight: 950; color: #ee4d2d; margin-bottom: 18px;} .meta-section-title {font-size: 22px; font-weight: 950; color: #1e293b; margin-top: 12px; margin-bottom: 8px;}
 @media (max-width: 1200px) {.hub-list-card {grid-template-columns: 1fr;} .hub-list-card .open-hover {opacity: 1; pointer-events: auto;}}
+@media (max-width: 768px) {
+    .fixed-sidebar {
+        position: relative !important;
+        width: 100% !important;
+        height: auto !important;
+        padding: 14px !important;
+    }
+
+    .fixed-sidebar img {
+        width: 160px !important;
+        margin: 0 auto 18px auto !important;
+    }
+
+    .fixed-menu-btn {
+        font-size: 14px !important;
+        padding: 12px 14px !important;
+        margin-bottom: 8px !important;
+    }
+
+    .fixed-footer {
+        position: relative !important;
+        bottom: auto !important;
+        left: auto !important;
+        right: auto !important;
+        margin-top: 12px !important;
+        padding: 14px !important;
+        font-size: 13px !important;
+    }
+
+    .block-container {
+        padding-left: 14px !important;
+        padding-right: 14px !important;
+        padding-top: 1rem !important;
+        max-width: 100% !important;
+    }
+
+    .dashboard-box {
+        padding: 18px !important;
+    }
+
+    .dashboard-box > div {
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 12px !important;
+    }
+
+    .dashboard-hub {
+        font-size: 26px !important;
+    }
+
+    .metric,
+    .metric.second,
+    .progress-card {
+        min-height: auto !important;
+        padding: 18px !important;
+        margin-bottom: 12px !important;
+    }
+
+    .metric-value {
+        font-size: 24px !important;
+    }
+
+    .circle {
+        width: 48px !important;
+        height: 48px !important;
+        font-size: 22px !important;
+        flex: 0 0 48px !important;
+    }
+
+    div[data-testid="column"] {
+        width: 100% !important;
+        flex: 1 1 100% !important;
+    }
+
+    .ats-header-cell,
+    .ats-cell {
+        font-size: 12px !important;
+        padding: 10px !important;
+        min-height: auto !important;
+    }
+
+    .route-progress {
+        min-width: 100px !important;
+    }
+
+    .wpp-button {
+        max-width: 100% !important;
+        min-width: 0 !important;
+        font-size: 12px !important;
+    }
+}
 </style>
 """
 
