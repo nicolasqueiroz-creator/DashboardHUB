@@ -2588,7 +2588,7 @@ sidebar_html = f"""
 
     <div class="fixed-footer">
          {st.session_state.get("usuario_nome", "Usuário")}<br>
-        <small>{st.session_state.get("perfil", "").upper()} · {st.session_state.get("hub_permitido", "")}</small>
+        <small>{st.session_state.get("perfil", "").upper()} - {st.session_state.get("hub_permitido", "")}</small>
     </div>
 </div>
 """
