@@ -1,6 +1,6 @@
 import streamlit as st
 from datetime import datetime
-from zoneinfo import zoneInfo
+from zoneInfo import zoneInfo
 from pathlib import Path
 from urllib.parse import urlparse, quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
