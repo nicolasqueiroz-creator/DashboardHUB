@@ -1,5 +1,6 @@
 import streamlit as st
 from datetime import datetime
+from zoneinfo import zoneInfo
 from pathlib import Path
 from urllib.parse import urlparse, quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -45,6 +46,10 @@ PENDING_USERS_PATH = BASE_DIR / "cadastros_pendentes.json"
 SESSIONS_PATH = BASE_DIR / "sessoes.json"
 
 HUBS = ["LPE-02", "LPE-03", "LPE-07", "LPE-11", "LPE-12"]
+FUSO_BRASIL = ZoneInfo("America/Recife")
+
+def agora_brasil():
+    return datetime.now(FUSO_BRASIL)
 
 
 def html(txt):
@@ -163,7 +168,7 @@ def encontrar_usuario_por_login(login_digitado, usuarios):
 def criar_sessao(usuario, dados):
     token = uuid.uuid4().hex
     sessoes = carregar_sessoes()
-    sessoes[token] = {"usuario": usuario, "criado_em": datetime.now().strftime("%d/%m/%Y %H:%M")}
+    sessoes[token] = {"usuario": usuario, "criado_em": agora_brasil().strftime("%d/%m/%Y %H:%M")}
     salvar_sessoes(sessoes)
 
     st.session_state.auth_token = token
@@ -271,7 +276,7 @@ def fazer_logout():
 
 def render_login():
     import streamlit.components.v1 as components
-    hora_atual = datetime.now().strftime("%H:%M:%S")
+    hora_atual = agora_brasil().strftime("%H:%M:%S")
     mostrar_cadastro = bool(st.session_state.get("mostrar_cadastro_login", False))
 
     html(f'''
@@ -1177,7 +1182,7 @@ def atualizar_hub_com_rotas(hub_atual, rotas):
     st.session_state.hubs[hub_atual]["Entregues"] = entregues
     st.session_state.hubs[hub_atual]["Onhold"] = onhold
     st.session_state.hubs[hub_atual]["Não Coletadas"] = nao_coletadas
-    st.session_state.hubs[hub_atual]["Última Atualização"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+    st.session_state.hubs[hub_atual]["Última Atualização"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
 
 
 def ordenar_rotas(rotas, campo_ordenacao, ordem_desc):
