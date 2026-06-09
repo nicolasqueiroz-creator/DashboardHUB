@@ -2397,17 +2397,50 @@ div[data-testid="column"] .wpp-button {{
 """
 
 sidebar_markup = f"""
-  f'<div class="fixed-sidebar">
-     f'<img src="data:image/png;base64,{logo64}">
-     f'<a class="fixed-menu-btn {menu_dashboard_active}" href="?{auth_query(f'tela=home&theme={tema_atual_url}')}" target="_self">Dashboard</a>
-      f'{menu_consolidado_link}
-      f'{menu_admin_link}
-      f'<div class="theme-sidebar-title">Aparência</div>
-      f'<a class="fixed-menu-btn theme-btn" href="?{auth_query(f'tela={tela_menu_atual}&hub={hub_menu_atual}&theme={tema_destino_url}')}" target="_self">{tema_label}</a>
-      f'<a class="fixed-menu-btn" href="?{auth_query('tela=logout')}" target="_self">Sair</a>
-      f'<div class="fixed-footer">
-          f'{nome_sidebar}<br>
-          f'<small>{perfil_sidebar} - {hub_sidebar}</small>
+  f'<div clasidebar_items = []
+
+sidebar_items.append(f'<div class="fixed-sidebar">')
+sidebar_items.append(f'<img src="data:image/png;base64,{logo64}">')
+
+sidebar_items.append(
+    f'<a class="fixed-menu-btn {menu_dashboard_active}" '
+    f'href="?{auth_query(f"tela=home&theme={tema_atual_url}")}" '
+    f'target="_self">Dashboard</a>'
+)
+
+if menu_consolidado_link:
+    sidebar_items.append(menu_consolidado_link)
+
+if menu_admin_link:
+    sidebar_items.append(menu_admin_link)
+
+sidebar_items.append('<div class="theme-sidebar-title">Aparência</div>')
+
+sidebar_items.append(
+    f'<a class="fixed-menu-btn theme-btn" '
+    f'href="?{auth_query(f"tela={tela_menu_atual}&hub={hub_menu_atual}&theme={tema_destino_url}")}" '
+    f'target="_self">{tema_label}</a>'
+)
+
+sidebar_items.append(
+    f'<a class="fixed-menu-btn" '
+    f'href="?{auth_query("tela=logout")}" '
+    f'target="_self">Sair</a>'
+)
+
+sidebar_items.append(
+    f'<div class="fixed-footer">'
+    f'{nome_sidebar}<br>'
+    f'<small>{perfil_sidebar} - {hub_sidebar}</small>'
+    f'</div>'
+)
+
+sidebar_items.append('</div>')
+
+sidebar_markup = "".join(sidebar_items)
+
+st.markdown(sidebar_css, unsafe_allow_html=True)
+st.markdown(sidebar_markup, unsafe_allow_html=True)
       f'</div>
   f'</div>
 """
