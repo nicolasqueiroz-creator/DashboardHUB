@@ -2577,7 +2577,7 @@ div[data-testid="column"] .wpp-button {{
         <small>{st.session_state.get("perfil", "").upper()} · {st.session_state.get("hub_permitido", "")}</small>
     </div>
 </div>
-""")
+""", unsafe_allow_html=True)
 
 
 if st.session_state.get("tema_escuro", False):
