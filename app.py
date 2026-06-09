@@ -2564,7 +2564,6 @@ div[data-testid="column"] .wpp-button {{
     }}
 }}
 </style>
-
 <div class="fixed-sidebar">
     <img src="data:image/png;base64,{logo64}">
     <a class="fixed-menu-btn {menu_dashboard_active}" href="?{auth_query(f'tela=home&theme={tema_atual_url}')}" target="_self">🏠 Dashboard</a>
