@@ -2591,7 +2591,7 @@ sidebar_html = f"""
         <small>{st.session_state.get("perfil", "").upper()} - {st.session_state.get("hub_permitido", "")}</small>
     </div>
 </div>
-"""
+""")
 
 st.markdown(sidebar_html, unsafe_allow_html=True)
 
