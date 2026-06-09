@@ -1884,7 +1884,6 @@ def ordenar_rotas(rotas, campo_ordenacao, ordem_desc):
 
 
 menu_dashboard_active = "active" if st.session_state.tela == "home" else ""
-menu_config_active = "active" if st.session_state.tela == "config" else ""
 menu_consolidado_active = "active" if st.session_state.tela == "consolidado" else ""
 menu_admin_active = "active" if st.session_state.tela == "admin" else ""
 
