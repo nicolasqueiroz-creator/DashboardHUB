@@ -14,7 +14,6 @@ import csv
 import unicodedata
 import hashlib
 import uuid
-import os
 import threading
 from io import StringIO, BytesIO
 from textwrap import dedent
@@ -28,11 +27,6 @@ try:
     import pandas as pd
 except Exception:
     pd = None
-
-try:
-    from supabase import create_client
-except Exception:
-    create_client = None
 
 st.set_page_config(
     page_title="Dashboard de Hubs Shopee",
@@ -48,32 +42,6 @@ ROTAS_CACHE_PATH = Path(__file__).parent / "rotas_cache.pkl"
 USERS_PATH = Path(__file__).parent / "usuarios.json"
 PENDING_USERS_PATH = Path(__file__).parent / "cadastros_pendentes.json"
 SESSIONS_PATH = Path(__file__).parent / "sessoes.json"
-
-# =========================================================
-# SUPABASE - SINCRONIZAÇÃO ENTRE COMPUTADORES
-# =========================================================
-# Configure em .streamlit/secrets.toml ou em variáveis de ambiente:
-# SUPABASE_URL = "https://xxxx.supabase.co"
-# SUPABASE_KEY = "sua_publishable_key"
-def ler_config_supabase(nome):
-    """
-    Lê configuração do Supabase sem quebrar quando não existe secrets.toml.
-    Prioridade:
-    1) Variável de ambiente do Windows
-    2) .streamlit/secrets.toml, se existir
-    """
-    valor = os.getenv(nome, "")
-    if valor:
-        return valor
-
-    try:
-        return st.secrets.get(nome, "")
-    except Exception:
-        return ""
-
-
-SUPABASE_URL = ler_config_supabase("SUPABASE_URL")
-SUPABASE_KEY = ler_config_supabase("SUPABASE_KEY")
 
 HUBS = ["LPE-02", "LPE-03", "LPE-07", "LPE-11", "LPE-12"]
 
@@ -93,132 +61,6 @@ if CSS_PATH.exists():
 
 logo64 = img_base64(LOGO_PATH)
 
-
-
-
-def supabase_ativo():
-    return bool(create_client and SUPABASE_URL and SUPABASE_KEY)
-
-
-@st.cache_resource(show_spinner=False)
-def obter_supabase_client():
-    if not supabase_ativo():
-        return None
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
-
-
-def supabase_upsert(tabela, payload, coluna_chave):
-    try:
-        client = obter_supabase_client()
-        if client is None:
-            return False
-        client.table(tabela).upsert(payload, on_conflict=coluna_chave).execute()
-        return True
-    except Exception as e:
-        try:
-            st.session_state.setdefault("terminal", []).append(f"> Supabase erro ao salvar {tabela}: {e}")
-        except Exception:
-            pass
-        return False
-
-
-def supabase_select_all(tabela):
-    try:
-        client = obter_supabase_client()
-        if client is None:
-            return []
-        resp = client.table(tabela).select("*").execute()
-        return resp.data or []
-    except Exception as e:
-        try:
-            st.session_state.setdefault("terminal", []).append(f"> Supabase erro ao carregar {tabela}: {e}")
-        except Exception:
-            pass
-        return []
-
-
-def salvar_hub_supabase(hub, dados_hub=None, rotas=None):
-    if not supabase_ativo():
-        return False
-
-    usuario_atual = st.session_state.get("usuario_nome") or st.session_state.get("usuario_login") or "Sistema"
-    agora_iso = datetime.now().isoformat()
-
-    if dados_hub is None:
-        dados_hub = st.session_state.get("hubs", {}).get(hub, {})
-
-    if rotas is None:
-        rotas = st.session_state.get("rotas_por_hub", {}).get(hub, [])
-
-    ok_status = supabase_upsert(
-        "hubs_status",
-        {
-            "hub": hub,
-            "dados": dados_hub,
-            "atualizado_por": usuario_atual,
-            "atualizado_em": agora_iso,
-        },
-        "hub",
-    )
-
-    ok_rotas = supabase_upsert(
-        "rotas_cache",
-        {
-            "hub": hub,
-            "rotas": rotas,
-            "atualizado_por": usuario_atual,
-            "atualizado_em": agora_iso,
-        },
-        "hub",
-    )
-
-    return ok_status and ok_rotas
-
-
-def carregar_dados_supabase_para_session():
-    if not supabase_ativo():
-        return False
-
-    carregou = False
-
-    for row in supabase_select_all("hubs_status"):
-        hub = row.get("hub")
-        dados = row.get("dados") or {}
-        atualizado_por = row.get("atualizado_por", "")
-        atualizado_em = row.get("atualizado_em", "")
-
-        if hub in HUBS and isinstance(dados, dict):
-            st.session_state.hubs.setdefault(hub, hub_default())
-            st.session_state.hubs[hub].update(dados)
-            if atualizado_por:
-                st.session_state.hubs[hub]["Atualizado Por"] = atualizado_por
-            if atualizado_em:
-                st.session_state.hubs[hub]["Atualizado Em Supabase"] = atualizado_em
-            carregou = True
-
-    for row in supabase_select_all("rotas_cache"):
-        hub = row.get("hub")
-        rotas = row.get("rotas") or []
-
-        if hub in HUBS and isinstance(rotas, list):
-            st.session_state.rotas_por_hub[hub] = rotas
-            carregou = True
-
-    return carregou
-
-
-def salvar_estado_supabase_todos_hubs():
-    if not supabase_ativo():
-        return False
-
-    ok = True
-    for hub in HUBS:
-        ok = salvar_hub_supabase(hub) and ok
-    return ok
-
-
-def supabase_status_label():
-    return "🟢 Supabase conectado" if supabase_ativo() else "🟡 Supabase não configurado - usando cache local"
 
 
 # =========================================================
@@ -909,12 +751,6 @@ def salvar_estado_persistido():
         tmp_path.replace(STATE_PATH)
 
         salvar_rotas_cache()
-
-        # Também sincroniza com Supabase, se estiver configurado.
-        try:
-            salvar_estado_supabase_todos_hubs()
-        except Exception:
-            pass
     except Exception:
         pass
 
@@ -984,12 +820,6 @@ if "estado_carregado" not in st.session_state:
         contatos = estado.get("contatos_por_hub", {})
         if isinstance(contatos, dict):
             st.session_state.contatos_por_hub.update(contatos)
-
-    # Carrega dados compartilhados do Supabase depois do cache local.
-    try:
-        carregar_dados_supabase_para_session()
-    except Exception:
-        pass
 
     st.session_state.estado_carregado = True
 
@@ -1845,13 +1675,6 @@ def atualizar_hub_com_rotas(hub_atual, rotas):
     st.session_state.hubs[hub_atual]["Onhold"] = onhold
     st.session_state.hubs[hub_atual]["Não Coletadas"] = nao_coletadas
     st.session_state.hubs[hub_atual]["Última Atualização"] = datetime.now().strftime("%d/%m/%Y %H:%M")
-    st.session_state.hubs[hub_atual]["Atualizado Por"] = st.session_state.get("usuario_nome", st.session_state.get("usuario_login", "Sistema"))
-
-    # Sincroniza automaticamente o hub atualizado para todos os computadores.
-    try:
-        salvar_hub_supabase(hub_atual, st.session_state.hubs[hub_atual], st.session_state.rotas_por_hub.get(hub_atual, []))
-    except Exception:
-        pass
 
 
 def ordenar_rotas(rotas, campo_ordenacao, ordem_desc):
@@ -1896,17 +1719,25 @@ hub_menu_atual = st.session_state.get("hub", "LPE-12")
 
 menu_consolidado_link = ""
 if usuario_pode_ver_consolidado():
-    menu_consolidado_link = f'<a class="fixed-menu-btn {menu_consolidado_active}" href="?{auth_query(f"tela=consolidado&theme={tema_atual_url}")}" target="_self">Consolidado</a>'
+    menu_consolidado_link = (
+        f'<a class="fixed-menu-btn {menu_consolidado_active}" '
+        f'href="?{auth_query(f"tela=consolidado&theme={tema_atual_url}")}" '
+        f'target="_self">Consolidado</a>'
+    )
 
 menu_admin_link = ""
 if usuario_logado_eh_gestao():
-    menu_admin_link = f'<a class="fixed-menu-btn {menu_admin_active}" href="?{auth_query(f"tela=admin&theme={tema_atual_url}")}" target="_self">Usuários</a>'
+    menu_admin_link = (
+        f'<a class="fixed-menu-btn {menu_admin_active}" '
+        f'href="?{auth_query(f"tela=admin&theme={tema_atual_url}")}" '
+        f'target="_self">Usuários</a>'
+    )
 
 nome_sidebar = str(st.session_state.get("usuario_nome", "Usuário")).replace("<", "").replace(">", "")
 perfil_sidebar = str(st.session_state.get("perfil", "")).upper().replace("<", "").replace(">", "")
 hub_sidebar = str(st.session_state.get("hub_permitido", "")).replace("<", "").replace(">", "")
 
-sidebar_html = f"""
+sidebar_css = f"""
 <style>
 [data-testid="stSidebar"], [data-testid="collapsedControl"] {{
     display: none !important;
@@ -2116,7 +1947,6 @@ sidebar_html = f"""
     font-size:15px;
 }}
 
-/* Espaçamento profissional do dashboard */
 .title {{
     font-size: 34px;
     line-height: 1.15;
@@ -2287,8 +2117,6 @@ div[data-testid="column"] .wpp-button {{
     margin-bottom: 8px !important;
 }}
 
-
-/* BOTÕES SHOPEE - Voltar / Abrir / Atualizar */
 div[data-testid="stButton"] button,
 div.stButton > button,
 button[kind="primary"],
@@ -2361,7 +2189,6 @@ button[kind="secondary"] * {{
     text-align: center;
 }}
 
-
 .route-progress {{
     width: 100%;
     min-width: 130px;
@@ -2420,8 +2247,6 @@ button[kind="secondary"] * {{
     align-items: center;
 }}
 
-
-/* Ajuste da tabela de ATs sem coluna duplicada de Performance */
 .ats-cell {{
     min-height: 50px;
     display: flex;
@@ -2525,8 +2350,6 @@ button[kind="secondary"] * {{
     margin-bottom: 8px;
 }}
 
-
-
 .ats-header-cell {{
     min-height: 50px;
     display: flex;
@@ -2571,7 +2394,9 @@ div[data-testid="column"] .wpp-button {{
     }}
 }}
 </style>
+"""
 
+sidebar_markup = f"""
 <div class="fixed-sidebar">
     <img src="data:image/png;base64,{logo64}">
     <a class="fixed-menu-btn {menu_dashboard_active}" href="?{auth_query(f'tela=home&theme={tema_atual_url}')}" target="_self">Dashboard</a>
@@ -2587,7 +2412,8 @@ div[data-testid="column"] .wpp-button {{
 </div>
 """
 
-st.markdown(sidebar_html, unsafe_allow_html=True)
+st.markdown(sidebar_css, unsafe_allow_html=True)
+st.markdown(sidebar_markup, unsafe_allow_html=True)
 
 if st.session_state.get("tema_escuro", False):
     html("""
@@ -3182,7 +3008,7 @@ def render_configuracao_hub(hub):
                 metricas_lote = buscar_metricas_em_lote(
                     bash_list,
                     mapa_v2,
-                    max_workers=20
+                    max_workers=6
                 )
 
                 for at, metricas in metricas_lote.items():
