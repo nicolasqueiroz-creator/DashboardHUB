@@ -2563,21 +2563,37 @@ div[data-testid="column"] .wpp-button {{
         pointer-events: auto;
     }}
 }}
+sidebar_html = f"""
+<style>
+/* mantém todo o CSS da sua sidebar aqui */
 </style>
+
 <div class="fixed-sidebar">
     <img src="data:image/png;base64,{logo64}">
-    <a class="fixed-menu-btn {menu_dashboard_active}" href="?{auth_query(f'tela=home&theme={tema_atual_url}')}" target="_self">🏠 Dashboard</a>
+
+    <a class="fixed-menu-btn {menu_dashboard_active}" 
+       href="?{auth_query(f'tela=home&theme={tema_atual_url}')}" 
+       target="_self">🏠 Dashboard</a>
+
     {menu_consolidado_link}
     {menu_admin_link}
+
     <div class="theme-sidebar-title">Aparência</div>
-    <a class="fixed-menu-btn theme-btn" href="?{auth_query(f'tela={tela_menu_atual}&hub={hub_menu_atual}&theme={tema_destino_url}')}" target="_self">{tema_label}</a>
+
+    <a class="fixed-menu-btn theme-btn" 
+       href="?{auth_query(f'tela={tela_menu_atual}&hub={hub_menu_atual}&theme={tema_destino_url}')}" 
+       target="_self">{tema_label}</a>
+
     <a class="fixed-menu-btn" href="?tela=logout" target="_self">🚪 Sair</a>
+
     <div class="fixed-footer">
         👤 {st.session_state.get("usuario_nome", "Usuário")}<br>
         <small>{st.session_state.get("perfil", "").upper()} · {st.session_state.get("hub_permitido", "")}</small>
     </div>
 </div>
-""")
+"""
+
+st.markdown(sidebar_html, unsafe_allow_html=True)
 
 
 if st.session_state.get("tema_escuro", False):
