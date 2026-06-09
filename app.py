@@ -2584,7 +2584,7 @@ sidebar_html = f"""
        href="?{auth_query(f'tela={tela_menu_atual}&hub={hub_menu_atual}&theme={tema_destino_url}')}" 
        target="_self">{tema_label}</a>
 
-    <a class="fixed-menu-btn" href="?tela=logout" target="_self">🚪 Sair</a>
+    <a class="fixed-menu-btn" href="?tela=logout" target="_self"> Sair</a>
 
     <div class="fixed-footer">
         👤 {st.session_state.get("usuario_nome", "Usuário")}<br>
