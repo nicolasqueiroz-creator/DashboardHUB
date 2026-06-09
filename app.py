@@ -2573,7 +2573,7 @@ sidebar_html = f"""
 
     <a class="fixed-menu-btn {menu_dashboard_active}" 
        href="?{auth_query(f'tela=home&theme={tema_atual_url}')}" 
-       target="_self">🏠 Dashboard</a>
+       target="_self"> Dashboard</a>
 
     {menu_consolidado_link}
     {menu_admin_link}
