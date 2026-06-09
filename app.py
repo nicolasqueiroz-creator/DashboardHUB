@@ -2397,19 +2397,19 @@ div[data-testid="column"] .wpp-button {{
 """
 
 sidebar_markup = f"""
-  <div class="fixed-sidebar">
-     <img src="data:image/png;base64,{logo64}">
-     <a class="fixed-menu-btn {menu_dashboard_active}" href="?{auth_query(f'tela=home&theme={tema_atual_url}')}" target="_self">Dashboard</a>
-      {menu_consolidado_link}
-      {menu_admin_link}
-      <div class="theme-sidebar-title">Aparência</div>
-      <a class="fixed-menu-btn theme-btn" href="?{auth_query(f'tela={tela_menu_atual}&hub={hub_menu_atual}&theme={tema_destino_url}')}" target="_self">{tema_label}</a>
-      <a class="fixed-menu-btn" href="?{auth_query('tela=logout')}" target="_self">Sair</a>
-      <div class="fixed-footer">
-          {nome_sidebar}<br>
-          <small>{perfil_sidebar} - {hub_sidebar}</small>
-      </div>
-  </div>
+  f'<div class="fixed-sidebar">
+     f'<img src="data:image/png;base64,{logo64}">
+     f'<a class="fixed-menu-btn {menu_dashboard_active}" href="?{auth_query(f'tela=home&theme={tema_atual_url}')}" target="_self">Dashboard</a>
+      f'{menu_consolidado_link}
+      f'{menu_admin_link}
+      f'<div class="theme-sidebar-title">Aparência</div>
+      f'<a class="fixed-menu-btn theme-btn" href="?{auth_query(f'tela={tela_menu_atual}&hub={hub_menu_atual}&theme={tema_destino_url}')}" target="_self">{tema_label}</a>
+      f'<a class="fixed-menu-btn" href="?{auth_query('tela=logout')}" target="_self">Sair</a>
+      f'<div class="fixed-footer">
+          f'{nome_sidebar}<br>
+          f'<small>{perfil_sidebar} - {hub_sidebar}</small>
+      f'</div>
+  f'</div>
 """
 
 st.markdown(sidebar_css, unsafe_allow_html=True)
