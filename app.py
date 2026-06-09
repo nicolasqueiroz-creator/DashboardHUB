@@ -1336,7 +1336,7 @@ if st.session_state.get("tema_escuro", False):
     .title, .section-title, .dashboard-hub, .metric-title, .metric-value, .progress-title, .progress-info, .progress-info span, .progress-info b, .hub-metric-label, .hub-metric-value, .subtitle, .config-title, .config-subtitle {color: #f8fafc !important;}
     .hub-list-card, .metric, .progress-card, .dashboard-box, .ats-cell, .ats-header, .ats-header-cell, [data-testid="stVerticalBlockBorderWrapper"] {background: #1e293b !important; color: #f8fafc !important; border-color: #334155 !important; box-shadow:none !important;}
     .progress-bg {background: #e5e7eb !important;} .progress-info {color: #f8fafc !important;}
-    .hub-metric-sub, .hub-card-info-line, .last-update-home, .last-update, .stMarkdown, p, label, span {color: #cbd5e1 !important;}
+    .hub-metric-sub, .hub-card-info-line, .last-update-home, .last-update, .stMarkdown, p, label, span {color: inherit !important;}
     .hub-card-info-line strong {color: #f8fafc !important;} .hub-card-info-warning {color: #ff7a45 !important;}
     .metric-value, .hub-metric-value, div[data-testid="stMetricValue"], div[data-testid="stMetricValue"] * {color: #f8fafc !important;}
     input, textarea, select {background: #0f172a !important; color: #f8fafc !important; border-color: #334155 !important;}
