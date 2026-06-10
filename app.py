@@ -55,7 +55,9 @@ FUSO_BRASIL = ZoneInfo("America/Recife")
 
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
-SUPABASE_TABLE = "dashboard_hubs"
+SUPABASE_TABLE_HUBS = "hubs_status"
+SUPABASE_TABLE_ROTAS = "rotas_cache"
+SUPABASE_TABLE_USUARIOS = "usuarios"
 
 def get_supabase():
     if not create_client or not SUPABASE_URL or not SUPABASE_KEY:
