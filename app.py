@@ -693,23 +693,28 @@ if "estado_carregado" not in st.session_state:
     if estado:
         st.session_state.hub = estado.get("hub", st.session_state.hub)
         st.session_state.tema_escuro = estado.get("tema_escuro", st.session_state.tema_escuro)
+
         hubs_salvos = estado.get("hubs", {})
         if isinstance(hubs_salvos, dict):
             for h in HUBS:
                 if h in hubs_salvos and isinstance(hubs_salvos[h], dict):
                     st.session_state.hubs[h].update(hubs_salvos[h])
+
         rotas_salvas = estado.get("rotas_por_hub", {})
         if isinstance(rotas_salvas, dict):
             for h in HUBS:
                 if h in rotas_salvas and isinstance(rotas_salvas[h], list):
                     st.session_state.rotas_por_hub[h] = rotas_salvas[h]
+
         db_links = estado.get("db_links_por_hub", {})
         if isinstance(db_links, dict):
             st.session_state.db_links_por_hub.update(db_links)
+
         contatos = estado.get("contatos_por_hub", {})
         if isinstance(contatos, dict):
             st.session_state.contatos_por_hub.update(contatos)
-                carregar_supabase()
+
+    carregar_supabase()
     st.session_state.estado_carregado = True
 
 params = st.query_params
