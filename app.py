@@ -49,7 +49,7 @@ HUBS = ["LPE-02", "LPE-03", "LPE-07", "LPE-11", "LPE-12"]
 FUSO_BRASIL = ZoneInfo("America/Recife")
 
 def agora_brasil():
-    return agora_brasil(FUSO_BRASIL)
+    return datetime.now(FUSO_BRASIL)
 
 
 def html(txt):
@@ -858,7 +858,7 @@ def calcular_taxa_esperada_entrega(rota, horas_meta=8):
     if hora_bipada is None:
         return None
     try:
-        horas_passadas = (agora_brasil() - hora_bipada).total_seconds() / 3600
+        horas_passadas = (datetime.now() - hora_bipada).total_seconds() / 3600
         horas_passadas = max(horas_passadas, 0)
         return min((horas_passadas / horas_meta) * 100, 100)
     except Exception:
