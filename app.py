@@ -1150,7 +1150,7 @@ def processar_rotas_v2(lista_v2, ats_desejadas=None):
             "AT": at, "Driver ID": rota.get("driver_id", ""), "Motorista": rota.get("driver_name", ""),
             "Modal": rota.get("vehicle_type", ""), "Gaiola": rota.get("corridor_cage", ""), "Bairro": rota.get("neighborhood", ""),
             "Cluster": rota.get("cluster", ""), "Cidade": rota.get("city", ""), "Hora Bipada": obter_hora_bipada(rota),
-            "Hora Atribuição": epoch_para_data(rota.get("assigned_time", 0)), "Distância KM": rota.get("total_distance", ""),
+            "Hora Atribuição": epoch_para_data(rota.get("driver_assigned_time", 0)), "Distância KM": rota.get("total_distance", ""),
             "Paradas": rota.get("stops_number", ""), "Station": rota.get("station_name", ""), "Telefone": "",
             "Total": 0, "Entregues": 0, "On Hold": 0, "Pendentes": 0, "Performance": 0, "Performance %": "0.0%",
         }
