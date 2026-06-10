@@ -648,18 +648,22 @@ def salvar_estado_persistido():
             "db_links_por_hub": st.session_state.get("db_links_por_hub", {}),
             "contatos_por_hub": st.session_state.get("contatos_por_hub", {}),
         }
+
         tmp_path = STATE_PATH.with_suffix(".tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(estado, f, ensure_ascii=False, separators=(",", ":"))
+
         tmp_path.replace(STATE_PATH)
         salvar_rotas_cache()
 
-            for hub in HUBS:
+        for hub in HUBS:
             salvar_hub_supabase(hub)
-                
-    except Exception:
-        pass
 
+    except Exception as e:
+        try:
+            log(f"Erro ao salvar estado persistido: {e}")
+        except Exception:
+            pass
 
 def hub_default():
     return {"Volume": 0, "Entregues": 0, "Pendentes": 0, "Pacotes em Rota de Entrega": 0, "Onhold": 0, "Total de Rotas": 0, "Não Coletadas": 0, "Última Atualização": "Sem atualização"}
