@@ -818,8 +818,8 @@ def obter_hora_bipada(rota):
         route_call_up_status = int(rota.get("route_call_up_status") or 0)
     except Exception:
         route_call_up_status = 0
-    driver_assingned_time = rota.get("driver_assingned_time")
-    if assigned_order_count <= 0 or status == 1 or route_call_up_status == 5 or driver_assingned_time in [None, "", 0, "0"]:
+    assingned_time = rota.get("assingned_time")
+    if assigned_order_count <= 0 or status == 1 or route_call_up_status == 5 or assingned_time in [None, "", 0, "0"]:
         return "Falta bipar"
     return epoch_para_data(assigned_time)
 
