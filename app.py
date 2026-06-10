@@ -88,6 +88,7 @@ def salvar_hub_supabase(hub):
         }, on_conflict="hub").execute()
 
         return True
+       
     except Exception as e:
         log(f"Erro ao salvar {hub} no Supabase: {e}")
         return False
