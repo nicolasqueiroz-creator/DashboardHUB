@@ -414,7 +414,7 @@ html, body {{ margin:0; padding:0; background:transparent; font-family:Arial, He
                 elif any(email_norm == normalizar_login(d.get("email", "")) for d in usuarios.values()):
                     st.error("Esse e-mail já está cadastrado.")
                 else:
-                    pendentes[usuario_norm] = {"nome": nome.strip(), "email": email_norm, "senha_hash": hash_senha(senha), "perfil_solicitado": "analista", "hub": hub, "status": "pendente", "criado_em": datetime.now().strftime("%d/%m/%Y %H:%M")}
+                    pendentes[usuario_norm] = {"nome": nome.strip(), "email": email_norm, "senha_hash": hash_senha(senha), "perfil_solicitado": "analista", "hub": hub, "status": "pendente", "criado_em": agora_brasil().strftime("%d/%m/%Y %H:%M")}
                     salvar_pendentes(pendentes)
                     st.success("Cadastro solicitado com sucesso. Aguarde aprovação da liderança/admin.")
 
@@ -1503,7 +1503,7 @@ def render_home():
         <div><div class="hub-metric-label">⏸️ On Hold</div><div class="hub-metric-value">{dados['Onhold']:,}</div><div class="hub-metric-sub">pacotes</div></div>
         <div><div class="status-list">Ativo</div><div class="hub-card-extra-info"><div class="hub-card-info-line">🕘 Atualizado: <strong>{ultima_atualizacao_hub}</strong></div><div class="hub-card-info-line hub-card-info-warning">🚚 Faltam carregar: <strong>{rotas_faltando_carregar}</strong> rotas</div></div><div class="open-hover" style="margin-top:14px;"><a class="hub-open-btn" href="?{auth_query(f'tela=hub&hub={hub_nome}&theme={tema_atual_url}')}" target="_self">Abrir Dashboard →</a></div></div></div>
         """.replace(",", "."))
-    html(f'<div class="last-update-home">🕘 Última atualização: {datetime.now().strftime("%d/%m/%Y %H:%M")}</div>')
+    html(f'<div class="last-update-home">🕘 Última atualização: {agora_brasil().strftime("%d/%m/%Y %H:%M")}</div>')
 
 
 def render_dashboard_hub(hub):
