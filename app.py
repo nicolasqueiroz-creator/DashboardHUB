@@ -20,6 +20,11 @@ from io import StringIO, BytesIO
 from textwrap import dedent
 
 try:
+    from supabase import create_client
+except Exception:
+    create_client = None
+
+try:
     import openpyxl
 except Exception:
     openpyxl = None
@@ -47,6 +52,65 @@ SESSIONS_PATH = BASE_DIR / "sessoes.json"
 
 HUBS = ["LPE-02", "LPE-03", "LPE-07", "LPE-11", "LPE-12"]
 FUSO_BRASIL = ZoneInfo("America/Recife")
+
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
+SUPABASE_TABLE = "dashboard_hubs"
+
+def get_supabase():
+    if not create_client or not SUPABASE_URL or not SUPABASE_KEY:
+        return None
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+def salvar_hub_supabase(hub):
+    try:
+        sb = get_supabase()
+        if not sb:
+            return False
+
+        payload = {
+            "hub": hub,
+            "dados": st.session_state.hubs.get(hub, {}),
+            "rotas": st.session_state.rotas_por_hub.get(hub, []),
+            "db_link": st.session_state.db_links_por_hub.get(hub, ""),
+            "contatos": st.session_state.contatos_por_hub.get(hub, {}),
+            "atualizado_em": agora_brasil().isoformat()
+        }
+
+        sb.table(SUPABASE_TABLE).upsert(payload, on_conflict="hub").execute()
+        return True
+    except Exception as e:
+        log(f"Erro ao salvar {hub} no Supabase: {e}")
+        return False
+
+
+def carregar_supabase():
+    try:
+        sb = get_supabase()
+        if not sb:
+            return
+
+        resp = sb.table(SUPABASE_TABLE).select("*").execute()
+        for item in resp.data or []:
+            hub = item.get("hub")
+            if hub not in HUBS:
+                continue
+
+            if isinstance(item.get("dados"), dict):
+                st.session_state.hubs[hub].update(item["dados"])
+
+            if isinstance(item.get("rotas"), list):
+                st.session_state.rotas_por_hub[hub] = item["rotas"]
+
+            if item.get("db_link"):
+                st.session_state.db_links_por_hub[hub] = item["db_link"]
+
+            if isinstance(item.get("contatos"), dict):
+                st.session_state.contatos_por_hub[hub] = item["contatos"]
+
+    except Exception as e:
+        log(f"Erro ao carregar Supabase: {e}")
 
 def agora_brasil():
     return datetime.now(FUSO_BRASIL)
@@ -557,6 +621,10 @@ def salvar_estado_persistido():
             json.dump(estado, f, ensure_ascii=False, separators=(",", ":"))
         tmp_path.replace(STATE_PATH)
         salvar_rotas_cache()
+
+            for hub in HUBS:
+            salvar_hub_supabase(hub)
+                
     except Exception:
         pass
 
@@ -605,6 +673,7 @@ if "estado_carregado" not in st.session_state:
         contatos = estado.get("contatos_por_hub", {})
         if isinstance(contatos, dict):
             st.session_state.contatos_por_hub.update(contatos)
+                carregar_supabase()
     st.session_state.estado_carregado = True
 
 params = st.query_params
