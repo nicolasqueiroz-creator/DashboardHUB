@@ -800,10 +800,13 @@ def epoch_para_data(valor):
         valor = int(valor)
         if valor <= 0:
             return "Falta bipar"
-        return datetime.fromtimestamp(valor, tz=ZoneInfo("UTC"))
+            
+        return ( 
+            datetime.fromtimestamp(valor, tz=ZoneInfo("UTC"))
         .astimezone(FUSO_BRASIL) 
         .strftime("%d/%m/%Y %H:%M:%S")
-
+        )
+        
     except Exception:
         return "Falta bipar"
 
