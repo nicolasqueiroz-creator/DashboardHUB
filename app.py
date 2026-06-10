@@ -800,7 +800,10 @@ def epoch_para_data(valor):
         valor = int(valor)
         if valor <= 0:
             return "Falta bipar"
-        return datetime.fromtimestamp(valor).strftime("%d/%m/%Y %H:%M:%S")
+        return datetime.fromtimestamp(valor, tz=ZoneInfo("UTC"))
+        .astimezone(FUSO_BRASIL)
+        )
+        .strftime("%d/%m/%Y %H:%M:%S")
     except Exception:
         return "Falta bipar"
 
@@ -858,7 +861,8 @@ def calcular_taxa_esperada_entrega(rota, horas_meta=8):
     if hora_bipada is None:
         return None
     try:
-        horas_passadas = (datetime.now() - hora_bipada).total_seconds() / 3600
+        hora_bipada = hora_bipada.replace(tzinfo=FUSO_BRASIL)
+        horas_passadas = (agora_brasil() - hora_bipada).total_seconds() / 3600
         horas_passadas = max(horas_passadas, 0)
         return min((horas_passadas / horas_meta) * 100, 100)
     except Exception:
