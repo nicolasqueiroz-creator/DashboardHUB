@@ -66,24 +66,53 @@ def get_supabase():
 
 
 def salvar_hub_supabase(hub):
-    try:
+   try:
         sb = get_supabase()
         if not sb:
             return False
 
-        payload = {
+        atualizado_por = st.session_state.get("usuario_login", "")
+
+        sb.table(SUPABASE_TABLE_HUBS).upsert({
             "hub": hub,
             "dados": st.session_state.hubs.get(hub, {}),
-            "rotas": st.session_state.rotas_por_hub.get(hub, []),
-            "db_link": st.session_state.db_links_por_hub.get(hub, ""),
-            "contatos": st.session_state.contatos_por_hub.get(hub, {}),
+            "atualizado_por": atualizado_por,
             "atualizado_em": agora_brasil().isoformat()
-        }
+        }, on_conflict="hub").execute()
 
-        sb.table(SUPABASE_TABLE).upsert(payload, on_conflict="hub").execute()
+        sb.table(SUPABASE_TABLE_ROTAS).upsert({
+            "hub": hub,
+            "rotas": st.session_state.rotas_por_hub.get(hub, []),
+            "atualizado_por": atualizado_por,
+            "atualizado_em": agora_brasil().isoformat()
+        }, on_conflict="hub").execute()
+
         return True
     except Exception as e:
         log(f"Erro ao salvar {hub} no Supabase: {e}")
+        return False
+
+
+def carregar_supabase():
+    try:
+        sb = get_supabase()
+        if not sb:
+            return
+
+        hubs_resp = sb.table(SUPABASE_TABLE_HUBS).select("*").execute()
+        for item in hubs_resp.data or []:
+            hub = item.get("hub")
+            if hub in HUBS and isinstance(item.get("dados"), dict):
+                st.session_state.hubs[hub].update(item["dados"])
+
+        rotas_resp = sb.table(SUPABASE_TABLE_ROTAS).select("*").execute()
+        for item in rotas_resp.data or []:
+            hub = item.get("hub")
+            if hub in HUBS and isinstance(item.get("rotas"), list):
+                st.session_state.rotas_por_hub[hub] = item["rotas"]
+
+    except Exception as e:
+        log(f"Erro ao carregar Supabase: {e}")
         return False
 
 
