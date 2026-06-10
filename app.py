@@ -804,8 +804,6 @@ def epoch_para_data(valor):
         .astimezone(FUSO_BRASIL) 
         .strftime("%d/%m/%Y %H:%M:%S")
 
-    )
-    
     except Exception:
         return "Falta bipar"
 
