@@ -1668,6 +1668,42 @@ def render_home():
 
 
 def render_dashboard_hub(hub):
+        if rotas_hub:
+        linhas_csv = []
+        for rota in rotas_hub:
+            linhas_csv.append({
+                "Hub": hub,
+                "AT": rota.get("AT", ""),
+                "Driver ID": rota.get("Driver ID", ""),
+                "Motorista": rota.get("Motorista", ""),
+                "Telefone": rota.get("Telefone", ""),
+                "Modal": rota.get("Modal", ""),
+                "Gaiola": rota.get("Gaiola", ""),
+                "Bairro": rota.get("Bairro", ""),
+                "Cluster": rota.get("Cluster", ""),
+                "Hora Bipada": rota.get("Hora Bipada", ""),
+                "Total": rota.get("Total", 0),
+                "Entregues": rota.get("Entregues", 0),
+                "Pendentes": rota.get("Pendentes", 0),
+                "On Hold": rota.get("On Hold", 0),
+                "Performance": rota.get("Performance %", "0.0%"),
+            })
+
+        df_export = pd.DataFrame(linhas_csv) if pd is not None else None
+
+        if df_export is not None:
+            csv_export = df_export.to_csv(index=False, sep=";", encoding="utf-8-sig")
+
+            st.download_button(
+                label=f"📥 Exportar CSV - {hub}",
+                data=csv_export,
+                file_name=f"{hub}_motoristas_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
+                mime="text/csv",
+                key=f"exportar_csv_{hub}",
+                type="primary"
+            )
+        else:
+            st.warning("Para exportar CSV, instale pandas: pip install pandas")
     dados = st.session_state.hubs[hub]
     rotas_hub = st.session_state.rotas_por_hub.get(hub, [])
     ultima_atualizacao_hub = dados.get("Última Atualização", "Sem atualização")
