@@ -647,6 +647,7 @@ def salvar_estado_persistido():
             "hubs": st.session_state.get("hubs", {}),
             "db_links_por_hub": st.session_state.get("db_links_por_hub", {}),
             "contatos_por_hub": st.session_state.get("contatos_por_hub", {}),
+            "configs_por_hub": st.session_state.get("configs_por_hub", {}),
         }
 
         tmp_path = STATE_PATH.with_suffix(".tmp")
@@ -685,6 +686,17 @@ if "db_links_por_hub" not in st.session_state:
     st.session_state.db_links_por_hub = {hub: "" for hub in HUBS}
 if "contatos_por_hub" not in st.session_state:
     st.session_state.contatos_por_hub = {hub: {} for hub in HUBS}
+    if "configs_por_hub" not in st.session_state:
+    st.session_state.configs_por_hub = {
+        hub: {
+            "bash_list": "",
+            "bash_v2": "",
+            "ats_texto": "",
+            "database": "",
+            "somente_v2": True
+        }
+        for hub in HUBS
+    }
 if "consolidado_resultado" not in st.session_state:
     st.session_state.consolidado_resultado = None
 
@@ -713,6 +725,11 @@ if "estado_carregado" not in st.session_state:
         contatos = estado.get("contatos_por_hub", {})
         if isinstance(contatos, dict):
             st.session_state.contatos_por_hub.update(contatos)
+            configs = estado.get("configs_por_hub", {})
+if isinstance(configs, dict):
+    for h in HUBS:
+        if h in configs:
+            st.session_state.configs_por_hub[h].update(configs[h])
 
     carregar_supabase()
     st.session_state.estado_carregado = True
