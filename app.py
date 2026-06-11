@@ -59,23 +59,70 @@ SUPABASE_TABLE_HUBS = "hubs_status"
 SUPABASE_TABLE_ROTAS = "rotas_cache"
 SUPABASE_TABLE_USUARIOS = "usuarios"
 
+def safe_log(msg):
+    try:
+        st.session_state.terminal.append(f"> {msg}")
+    except Exception:
+        pass
+
+
 def get_supabase():
     if not create_client or not SUPABASE_URL or not SUPABASE_KEY:
         return None
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+def config_default():
+    return {"bash_list": "", "bash_v2": "", "ats": "", "db_link": ""}
+
+
+def montar_dados_hub_para_salvar(hub):
+    dados = dict(st.session_state.hubs.get(hub, {}))
+    config = dict(st.session_state.config_por_hub.get(hub, config_default()))
+    config["db_link"] = st.session_state.db_links_por_hub.get(hub, config.get("db_link", ""))
+    dados["__config"] = config
+    dados["__contatos"] = st.session_state.contatos_por_hub.get(hub, {})
+    return dados
+
+
+def aplicar_dados_hub_carregados(hub, dados):
+    if not isinstance(dados, dict):
+        return
+
+    config = dados.get("__config", {})
+    if isinstance(config, dict):
+        atual = st.session_state.config_por_hub.get(hub, config_default())
+        atual.update({
+            "bash_list": config.get("bash_list", atual.get("bash_list", "")),
+            "bash_v2": config.get("bash_v2", atual.get("bash_v2", "")),
+            "ats": config.get("ats", atual.get("ats", "")),
+            "db_link": config.get("db_link", atual.get("db_link", "")),
+        })
+        st.session_state.config_por_hub[hub] = atual
+        st.session_state.db_links_por_hub[hub] = atual.get("db_link", "")
+
+    contatos = dados.get("__contatos", {})
+    if isinstance(contatos, dict):
+        st.session_state.contatos_por_hub[hub] = contatos
+
+    metricas = {k: v for k, v in dados.items() if k not in ["__config", "__contatos"]}
+    if metricas:
+        st.session_state.hubs[hub].update(metricas)
+
+
 def salvar_hub_supabase(hub):
     try:
         sb = get_supabase()
         if not sb:
+            safe_log("Supabase não configurado. Salvando apenas localmente.")
             return False
 
         atualizado_por = st.session_state.get("usuario_login", "")
+        dados_hub = montar_dados_hub_para_salvar(hub)
 
         sb.table(SUPABASE_TABLE_HUBS).upsert({
             "hub": hub,
-            "dados": st.session_state.hubs.get(hub, {}),
+            "dados": dados_hub,
             "atualizado_por": atualizado_por,
             "atualizado_em": agora_brasil().isoformat()
         }, on_conflict="hub").execute()
@@ -90,21 +137,29 @@ def salvar_hub_supabase(hub):
         return True
 
     except Exception as e:
-        log(f"Erro ao salvar {hub} no Supabase: {e}")
+        safe_log(f"Erro ao salvar {hub} no Supabase: {e}")
         return False
+
+
+def salvar_todos_hubs_supabase():
+    ok = True
+    for hub in HUBS:
+        ok = salvar_hub_supabase(hub) and ok
+    return ok
 
 
 def carregar_supabase():
     try:
         sb = get_supabase()
         if not sb:
-            return
+            safe_log("Supabase não configurado. Carregando dados locais.")
+            return False
 
         hubs_resp = sb.table(SUPABASE_TABLE_HUBS).select("*").execute()
         for item in hubs_resp.data or []:
             hub = item.get("hub")
-            if hub in HUBS and isinstance(item.get("dados"), dict):
-                st.session_state.hubs[hub].update(item["dados"])
+            if hub in HUBS:
+                aplicar_dados_hub_carregados(hub, item.get("dados", {}))
 
         rotas_resp = sb.table(SUPABASE_TABLE_ROTAS).select("*").execute()
         for item in rotas_resp.data or []:
@@ -112,37 +167,12 @@ def carregar_supabase():
             if hub in HUBS and isinstance(item.get("rotas"), list):
                 st.session_state.rotas_por_hub[hub] = item["rotas"]
 
+        return True
+
     except Exception as e:
-        log(f"Erro ao carregar Supabase: {e}")
+        safe_log(f"Erro ao carregar Supabase: {e}")
         return False
 
-
-def carregar_supabase():
-    try:
-        sb = get_supabase()
-        if not sb:
-            return
-
-        resp = sb.table(SUPABASE_TABLE).select("*").execute()
-        for item in resp.data or []:
-            hub = item.get("hub")
-            if hub not in HUBS:
-                continue
-
-            if isinstance(item.get("dados"), dict):
-                st.session_state.hubs[hub].update(item["dados"])
-
-            if isinstance(item.get("rotas"), list):
-                st.session_state.rotas_por_hub[hub] = item["rotas"]
-
-            if item.get("db_link"):
-                st.session_state.db_links_por_hub[hub] = item["db_link"]
-
-            if isinstance(item.get("contatos"), dict):
-                st.session_state.contatos_por_hub[hub] = item["contatos"]
-
-    except Exception as e:
-        log(f"Erro ao carregar Supabase: {e}")
 
 def agora_brasil():
     return datetime.now(FUSO_BRASIL)
@@ -647,6 +677,7 @@ def salvar_estado_persistido():
             "hubs": st.session_state.get("hubs", {}),
             "db_links_por_hub": st.session_state.get("db_links_por_hub", {}),
             "contatos_por_hub": st.session_state.get("contatos_por_hub", {}),
+            "config_por_hub": st.session_state.get("config_por_hub", {}),
         }
 
         tmp_path = STATE_PATH.with_suffix(".tmp")
@@ -681,6 +712,8 @@ if "rotas_por_hub" not in st.session_state:
     st.session_state.rotas_por_hub = {hub: [] for hub in HUBS}
 if "terminal" not in st.session_state:
     st.session_state.terminal = []
+if "config_por_hub" not in st.session_state:
+    st.session_state.config_por_hub = {hub: config_default() for hub in HUBS}
 if "db_links_por_hub" not in st.session_state:
     st.session_state.db_links_por_hub = {hub: "" for hub in HUBS}
 if "contatos_por_hub" not in st.session_state:
@@ -706,9 +739,20 @@ if "estado_carregado" not in st.session_state:
                 if h in rotas_salvas and isinstance(rotas_salvas[h], list):
                     st.session_state.rotas_por_hub[h] = rotas_salvas[h]
 
+        config_salva = estado.get("config_por_hub", {})
+        if isinstance(config_salva, dict):
+            for h in HUBS:
+                if isinstance(config_salva.get(h), dict):
+                    atual = st.session_state.config_por_hub.get(h, config_default())
+                    atual.update(config_salva[h])
+                    st.session_state.config_por_hub[h] = atual
+
         db_links = estado.get("db_links_por_hub", {})
         if isinstance(db_links, dict):
             st.session_state.db_links_por_hub.update(db_links)
+            for h in HUBS:
+                if st.session_state.db_links_por_hub.get(h):
+                    st.session_state.config_por_hub[h]["db_link"] = st.session_state.db_links_por_hub[h]
 
         contatos = estado.get("contatos_por_hub", {})
         if isinstance(contatos, dict):
@@ -1691,11 +1735,31 @@ def render_dashboard_hub(hub):
 
 def render_configuracao_hub(hub):
     html(f'<div class="config-title">⚙️ Configuração Operacional - {hub}</div><div class="config-subtitle">Cole o Bash LIST, o Bash V2 e as ATs específicas deste hub.</div>')
+
+    config_hub = st.session_state.config_por_hub.get(hub, config_default())
+
+    if f"bash_list_{hub}" not in st.session_state:
+        st.session_state[f"bash_list_{hub}"] = config_hub.get("bash_list", "")
+    if f"bash_v2_{hub}" not in st.session_state:
+        st.session_state[f"bash_v2_{hub}"] = config_hub.get("bash_v2", "")
+    if f"ats_{hub}" not in st.session_state:
+        st.session_state[f"ats_{hub}"] = config_hub.get("ats", "")
+    if f"database_{hub}" not in st.session_state:
+        st.session_state[f"database_{hub}"] = config_hub.get("db_link", st.session_state.db_links_por_hub.get(hub, ""))
+
     bash_list = st.text_area("Bash LIST / AUTH", height=180, key=f"bash_list_{hub}")
     bash_v2 = st.text_area("Bash V2", height=240, key=f"bash_v2_{hub}")
     ats_texto = st.text_area("ATs para buscar", height=170, placeholder="Cole uma AT por linha ou separadas por vírgula.", key=f"ats_{hub}")
-    link_database = st.text_input("Link da planilha Database do Hub", value=st.session_state.db_links_por_hub.get(hub, ""), placeholder="Cole o link da aba Database. Coluna B = Nome | Coluna I = Telefone", key=f"database_{hub}")
+    link_database = st.text_input("Link da planilha Database do Hub", placeholder="Cole o link da aba Database. Coluna B = Nome | Coluna I = Telefone", key=f"database_{hub}")
+
+    st.session_state.config_por_hub[hub] = {
+        "bash_list": bash_list,
+        "bash_v2": bash_v2,
+        "ats": ats_texto,
+        "db_link": link_database,
+    }
     st.session_state.db_links_por_hub[hub] = link_database
+
     arquivo_database = st.file_uploader("Anexar arquivo Database do Hub (.xlsx, .xls ou .csv)", type=["xlsx", "xls", "csv"], key=f"database_file_{hub}")
     col_a, col_c, col_b = st.columns([1, 1, 2])
     with col_a:
@@ -1704,6 +1768,17 @@ def render_configuracao_hub(hub):
         carregar_contatos_btn = st.button("📱 Carregar contatos", use_container_width=True, key=f"carregar_contatos_{hub}", type="primary")
     with col_b:
         somente_v2 = st.checkbox("Buscar todas as páginas do V2", value=True, key=f"somente_v2_{hub}")
+
+    if st.button(f"💾 Salvar configurações do {hub}", use_container_width=True, key=f"salvar_config_{hub}", type="primary"):
+        st.session_state.config_por_hub[hub] = {
+            "bash_list": st.session_state.get(f"bash_list_{hub}", ""),
+            "bash_v2": st.session_state.get(f"bash_v2_{hub}", ""),
+            "ats": st.session_state.get(f"ats_{hub}", ""),
+            "db_link": st.session_state.get(f"database_{hub}", ""),
+        }
+        st.session_state.db_links_por_hub[hub] = st.session_state.config_por_hub[hub]["db_link"]
+        salvar_estado_persistido()
+        st.success(f"Configurações do {hub} salvas na nuvem.")
 
     if carregar_contatos_btn:
         try:
@@ -1723,6 +1798,13 @@ def render_configuracao_hub(hub):
             log(f"Não foi possível carregar contatos do hub {hub}: {e}")
 
     if iniciar:
+        st.session_state.config_por_hub[hub] = {
+            "bash_list": bash_list,
+            "bash_v2": bash_v2,
+            "ats": ats_texto,
+            "db_link": link_database,
+        }
+        st.session_state.db_links_por_hub[hub] = link_database
         st.session_state.terminal = []
         ats = limpar_ats(ats_texto)
         try:
