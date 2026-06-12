@@ -1621,7 +1621,7 @@ def detalhes_at(rota):
     st.write(f"**Performance atual:** {rota['Performance %']}")
     st.write(f"**Taxa esperada de entrega:** {formatar_taxa_esperada(rota)}")
     def gerar_dataframe_ranking(rotas):
-    linhas = []
+        linhas = []
 
     for rota in rotas:
         nome = str(rota.get("Motorista", "") or "").strip()
