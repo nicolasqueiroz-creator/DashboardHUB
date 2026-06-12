@@ -1692,6 +1692,31 @@ def render_ranking_hub(hub):
         st.info("Nenhum motorista com dados válidos para ranking.")
         return
 
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        minimo_ranking = st.number_input(
+            "Performance mínima para melhores",
+            min_value=0.0,
+            max_value=100.0,
+            value=97.0,
+            step=1.0,
+            key=f"ranking_min_{hub}"
+        )
+
+    with col2:
+        limite_ofensores = st.number_input(
+            "Performance máxima para ofensores",
+            min_value=0.0,
+            max_value=100.0,
+            value=80.0,
+            step=1.0,
+            key=f"ranking_ofensor_{hub}"
+        )
+
+    melhores = df[df["Performance"] >= minimo_ranking].copy()
+    ofensores = df[df["Performance"] < limite_ofensores].copy()
+
     csv_ranking = gerar_csv_ranking(rotas)
     if csv_ranking:
         st.download_button(
@@ -1703,8 +1728,13 @@ def render_ranking_hub(hub):
             type="primary"
         )
 
-    for idx, row in enumerate(df.itertuples(), start=1):
-        st.markdown(f"**{idx:02d}. {row.Motorista}** — {row.Performance:.1f}%")
+    html('<div class="section-title">🏆 Melhores do Dia</div>')
+
+    if melhores.empty:
+        st.info("Nenhum motorista acima da performance mínima configurada.")
+    else:
+        for idx, row in enumerate(melhores.itertuples(), start=1):
+            st.markdown(f"**{idx:02d}. {row.Motorista}** — {row.Performance:.1f}%")
 
     html('<div class="section-title">⚠️ Ofensores Operacionais</div>')
 
