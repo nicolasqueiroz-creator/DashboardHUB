@@ -2122,21 +2122,28 @@ elif st.session_state.tela == "consolidado":
     else:
         st.error("Seu perfil não possui acesso ao consolidado.")
 else:
-    hub_atual = st.session_state.hub
+    hub_atual = st.session_state.get("hub", "LPE-12")
+
     if not usuario_pode_acessar_hub(hub_atual):
         render_acesso_negado(hub_atual)
         st.stop()
-    render_header(titulo=f"Dashboard {hub_atual}", subtitulo=f"Performance operacional em tempo real do hub {hub_atual}.")
-aba_dashboard, aba_ranking, aba_config = st.tabs([
-    f"📊 Dashboard {st.session_state.hub}",
-    f"🏆 Ranking {st.session_state.hub}",
-    f"⚙️ Configuração {st.session_state.hub}",
-])
-with aba_dashboard:
-    render_dashboard_hub(hub_atual)
 
-with aba_ranking:
-    render_ranking_operacional(hub_atual)
+    render_header(
+        titulo=f"Dashboard {hub_atual}",
+        subtitulo=f"Performance operacional em tempo real do hub {hub_atual}."
+    )
 
-with aba_config:
-    render_configuracao_hub(hub_atual)
+    aba_dashboard, aba_ranking, aba_config = st.tabs([
+        f"📊 Dashboard {hub_atual}",
+        f"🏆 Ranking {hub_atual}",
+        f"⚙️ Configuração {hub_atual}"
+    ])
+
+    with aba_dashboard:
+        render_dashboard_hub(hub_atual)
+
+    with aba_ranking:
+        render_ranking_hub(hub_atual)
+
+    with aba_config:
+        render_configuracao_hub(hub_atual)
