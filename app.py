@@ -1728,6 +1728,9 @@ def gerar_arte_ranking_png(hub, df_ranking, limite, tipo="melhores"):
 
     df_arte = df_ranking.copy()
     df_arte["Performance"] = df_arte["Performance"].astype(float).round(1)
+    # Agrupa por percentual inteiro para evitar um bloco para 99.2%, 99.1%, 98.5%, etc.
+    # Ex.: 99.9%, 99.5% e 99.1% ficam todos no bloco 99%.
+    df_arte["Faixa"] = df_arte["Performance"].apply(lambda x: int(float(x)))
 
     ofensores = tipo == "ofensores"
     if ofensores:
@@ -1749,11 +1752,11 @@ def gerar_arte_ranking_png(hub, df_ranking, limite, tipo="melhores"):
         badge = "TOP"
         asc = False
 
-    df_arte = df_arte.sort_values(["Performance", "Entregues"], ascending=[asc, False]).reset_index(drop=True)
+    df_arte = df_arte.sort_values(["Faixa", "Performance", "Entregues"], ascending=[asc, asc, False]).reset_index(drop=True)
 
     grupos = []
-    for perf, grupo in df_arte.groupby("Performance", sort=False):
-        grupos.append((float(perf), grupo.reset_index(drop=True)))
+    for faixa, grupo in df_arte.groupby("Faixa", sort=False):
+        grupos.append((int(faixa), grupo.reset_index(drop=True)))
 
     W = 1800
     LEFT = 36
@@ -1948,7 +1951,7 @@ def gerar_arte_ranking_png(hub, df_ranking, limite, tipo="melhores"):
             left_fill = (45, 22, 8)
             metal = "bronze"
         draw.rounded_rectangle((x1, y1, x1 + PCT_W, y2), radius=20, fill=left_fill, outline=cor_neon2 if not ofensores else cor_neon, width=2)
-        perf_txt = f"{perf:.1f}%" if perf % 1 else f"{int(perf)}%"
+        perf_txt = f"{int(perf)}%"
         pct_font = f_pct_big if sec_h > 145 else f_pct_med
         pw = draw.textlength(perf_txt, font=pct_font)
         draw.text((x1 + (PCT_W - pw) / 2, y1 + 24), perf_txt, fill=cor_neon2 if not ofensores else (255, 94, 94), font=pct_font)
@@ -2091,16 +2094,30 @@ def render_ranking_hub(hub):
     if melhores.empty:
         st.info("Nenhum motorista acima da performance mínima configurada.")
     else:
-        for idx, row in enumerate(melhores.itertuples(), start=1):
-            st.markdown(f"**{idx:02d}. {row.Motorista}** — {row.Performance:.1f}%")
+        melhores_lista = melhores.copy()
+        melhores_lista["Faixa"] = melhores_lista["Performance"].apply(lambda x: int(float(x)))
+        melhores_lista = melhores_lista.sort_values(["Faixa", "Performance", "Entregues"], ascending=[False, False, False])
+        posicao = 1
+        for faixa, grupo in melhores_lista.groupby("Faixa", sort=False):
+            with st.expander(f"🏆 {int(faixa)}% — {len(grupo)} motoristas", expanded=True):
+                for row in grupo.itertuples():
+                    st.markdown(f"**{posicao:02d}. {row.Motorista}** — {row.Performance:.1f}%")
+                    posicao += 1
 
     html('<div class="section-title">⚠️ Ofensores Operacionais</div>')
 
     if ofensores.empty:
         st.success("Nenhum ofensor abaixo do limite configurado.")
     else:
-        for idx, row in enumerate(ofensores.itertuples(), start=1):
-            st.markdown(f"**{idx:02d}. {row.Motorista}** — {row.Performance:.1f}%")
+        ofensores_lista = ofensores.copy()
+        ofensores_lista["Faixa"] = ofensores_lista["Performance"].apply(lambda x: int(float(x)))
+        ofensores_lista = ofensores_lista.sort_values(["Faixa", "Performance", "Entregues"], ascending=[True, True, False])
+        posicao = 1
+        for faixa, grupo in ofensores_lista.groupby("Faixa", sort=False):
+            with st.expander(f"⚠️ {int(faixa)}% — {len(grupo)} motoristas", expanded=True):
+                for row in grupo.itertuples():
+                    st.markdown(f"**{posicao:02d}. {row.Motorista}** — {row.Performance:.1f}%")
+                    posicao += 1
 
 def render_header(titulo="Dashboard de Hubs", subtitulo="Acompanhe a performance operacional dos hubs em tempo real."):
     c1, c2, c3 = st.columns([0.7, 5, 2])
