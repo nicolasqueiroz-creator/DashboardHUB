@@ -16,6 +16,7 @@ import unicodedata
 import hashlib
 import uuid
 import threading
+import os
 from io import StringIO, BytesIO
 from textwrap import dedent
 
@@ -1035,7 +1036,7 @@ def render_barra_percentual(percentual, texto_extra=""):
     return f'''<div class="route-progress"><div class="route-progress-top"><b>{percentual:.1f}%</b><span>{str(texto_extra or '')}</span></div><div class="route-progress-bg"><div class="route-progress-fill" style="width:{percentual:.1f}%;"></div></div></div>'''
 
 
-def formatar_taxa_esperada(rota):
+def _esperada(rota):
     taxa = calcular_taxa_esperada_entrega(rota)
     return "-" if taxa is None else f"{taxa:.1f}%"
 
@@ -1619,6 +1620,125 @@ def detalhes_at(rota):
     st.write(f"**Pendentes:** {rota['Pendentes']}")
     st.write(f"**Performance atual:** {rota['Performance %']}")
     st.write(f"**Taxa esperada de entrega:** {formatar_taxa_esperada(rota)}")
+    def gerar_dataframe_ranking(rotas):
+    linhas = []
+
+    for rota in rotas:
+        nome = str(rota.get("Motorista", "") or "").strip()
+        if not nome or nome.upper() in ["NÃO BIPADA", "NAO BIPADA", "SEM MOTORISTA"]:
+            continue
+
+        total = int(rota.get("Total") or 0)
+        entregues = int(rota.get("Entregues") or 0)
+
+        if total <= 0:
+            continue
+
+        performance = entregues / total * 100
+
+        linhas.append({
+            "Motorista": nome.title(),
+            "Performance": round(performance, 1),
+            "Total": total,
+            "Entregues": entregues,
+            "Pendentes": int(rota.get("Pendentes") or 0),
+            "AT": rota.get("AT", "")
+        })
+
+    if pd is None:
+        return []
+
+    df = pd.DataFrame(linhas)
+
+    if df.empty:
+        return df
+
+    df = df.sort_values(by=["Performance", "Entregues"], ascending=[False, False])
+    return df
+
+
+def gerar_csv_ranking(rotas):
+    df = gerar_dataframe_ranking(rotas)
+
+    if pd is None or df.empty:
+        return None
+
+    return df.to_csv(index=False, sep=";", encoding="utf-8-sig")
+
+
+def render_ranking_operacional(hub):
+    rotas = st.session_state.rotas_por_hub.get(hub, [])
+
+    html(f'<div class="section-title">🏆 Ranking Operacional - {hub}</div>')
+
+    if not rotas:
+        st.info("Nenhuma rota carregada para gerar ranking.")
+        return
+
+    df = gerar_dataframe_ranking(rotas)
+
+    if pd is None:
+        st.error("Para usar o ranking, instale pandas.")
+        return
+
+    if df.empty:
+        st.info("Nenhum motorista com dados válidos para ranking.")
+        return
+
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        minimo_ranking = st.number_input(
+            "Performance mínima para arte dos melhores",
+            min_value=0.0,
+            max_value=100.0,
+            value=97.0,
+            step=1.0,
+            key=f"ranking_min_{hub}"
+        )
+
+    with col2:
+        limite_ofensores = st.number_input(
+            "Performance máxima para ofensores",
+            min_value=0.0,
+            max_value=100.0,
+            value=80.0,
+            step=1.0,
+            key=f"ranking_ofensor_{hub}"
+        )
+
+    melhores = df[df["Performance"] >= minimo_ranking].copy()
+    ofensores = df[df["Performance"] < limite_ofensores].copy()
+
+    csv_ranking = gerar_csv_ranking(rotas)
+    if csv_ranking:
+        st.download_button(
+            label=f"📥 Exportar CSV Ranking - {hub}",
+            data=csv_ranking,
+            file_name=f"ranking_operacional_{hub}_{agora_brasil().strftime('%d_%m_%Y')}.csv",
+            mime="text/csv",
+            key=f"baixar_ranking_csv_{hub}",
+            type="primary"
+        )
+
+    html('<div class="section-title">🏆 Melhores do Dia</div>')
+
+    faixas = sorted(melhores["Performance"].unique(), reverse=True)
+
+    for faixa in faixas:
+        grupo = melhores[melhores["Performance"] == faixa]
+
+        with st.expander(f"🏆 {faixa:.1f}% - {len(grupo)} motoristas", expanded=True):
+            for idx, row in enumerate(grupo.itertuples(), start=1):
+                st.markdown(f"**{idx:02d}. {row.Motorista}** — {row.Performance:.1f}%")
+
+    html('<div class="section-title">⚠️ Ofensores Operacionais</div>')
+
+    if ofensores.empty:
+        st.success("Nenhum ofensor abaixo do limite configurado.")
+    else:
+        for idx, row in enumerate(ofensores.itertuples(), start=1):
+            st.markdown(f"**{idx:02d}. {row.Motorista}** — {row.Performance:.1f}%")
     link_wpp = montar_link_whatsapp(st.session_state.get("hub", "LPE-12"), rota)
     if link_wpp:
         st.markdown(f'<a class="wpp-button" href="{link_wpp}" target="_blank">WhatsApp</a>', unsafe_allow_html=True)
@@ -1991,8 +2111,16 @@ else:
         render_acesso_negado(hub_atual)
         st.stop()
     render_header(titulo=f"Dashboard {hub_atual}", subtitulo=f"Performance operacional em tempo real do hub {hub_atual}.")
-    aba_dashboard, aba_config = st.tabs([f"📊 Dashboard {hub_atual}", f"⚙️ Configuração {hub_atual}"])
-    with aba_dashboard:
-        render_dashboard_hub(hub_atual)
-    with aba_config:
-        render_configuracao_hub(hub_atual)
+aba_dashboard, aba_ranking, aba_config = st.tabs([
+    f"📊 Dashboard {hub_atual}",
+    f"🏆 Ranking {hub_atual}",
+    f"⚙️ Configuração {hub_atual}"
+])
+with aba_dashboard:
+    render_dashboard_hub(hub_atual)
+
+with aba_ranking:
+    render_ranking_operacional(hub_atual)
+
+with aba_config:
+    render_configuracao_hub(hub_atual)
