@@ -2129,8 +2129,8 @@ else:
     render_header(titulo=f"Dashboard {hub_atual}", subtitulo=f"Performance operacional em tempo real do hub {hub_atual}.")
 aba_dashboard, aba_ranking, aba_config = st.tabs([
     f"📊 Dashboard {st.session_state.hub}",
-    f"🏆 Ranking {hub_atual}",
-    f"⚙️ Configuração {hub_atual}"
+    f"🏆 Ranking {st.session_state.hub}",
+    f"⚙️ Configuração {st.session_state.hub}",
 ])
 with aba_dashboard:
     render_dashboard_hub(hub_atual)
