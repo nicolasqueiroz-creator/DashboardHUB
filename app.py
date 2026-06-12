@@ -1678,7 +1678,7 @@ def render_dashboard_hub(hub):
     entregues = dados["Entregues"]
     pendentes = dados["Pendentes"]
     performance = entregues / volume if volume else 0
-    falta = 1 - performance if volume else 0
+    falta = pendentes / volume if volume else 0
     meta_95 = math.ceil(volume * 0.95) if volume else 0
     faltam_meta = max(meta_95 - entregues, 0)
     progresso_meta = entregues / meta_95 if meta_95 else 0
