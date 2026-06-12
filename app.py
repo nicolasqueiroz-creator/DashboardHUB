@@ -1674,229 +1674,124 @@ def gerar_csv_ranking(rotas):
 
 
 
-
-def _carregar_fonte_pil(tamanho, bold=False):
-    from PIL import ImageFont
-    candidatos = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf" if bold else "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-    ]
-    for caminho in candidatos:
-        try:
-            return ImageFont.truetype(caminho, tamanho)
-        except Exception:
-            pass
-    return ImageFont.load_default()
-
-
-def _texto_cortado_pil(draw, texto, fonte, largura_max):
-    texto = str(texto or "").strip()
-    if not texto:
-        return ""
+def gerar_arte_ranking_png(hub, melhores, minimo_ranking):
     try:
-        if draw.textlength(texto, font=fonte) <= largura_max:
-            return texto
-        while len(texto) > 3 and draw.textlength(texto + "...", font=fonte) > largura_max:
-            texto = texto[:-1]
-        return texto.strip() + "..."
-    except Exception:
-        return texto[:32] + ("..." if len(texto) > 32 else "")
-
-
-def _formatar_nome_ranking(nome):
-    nome = str(nome or "").strip()
-    if not nome:
-        return ""
-    conectores = {"da", "de", "do", "das", "dos", "e"}
-    partes = []
-    for p in nome.lower().split():
-        partes.append(p if p in conectores else p.capitalize())
-    return " ".join(partes)
-
-
-
-def gerar_arte_ranking_png(hub, df_ranking, limite, tipo="melhores"):
-    """Gera arte PNG em layout futurista, sem prévia na tela.
-    Usa apenas PIL e retorna bytes para st.download_button.
-    """
-    try:
-        from PIL import Image, ImageDraw, ImageFilter
+        from PIL import Image, ImageDraw, ImageFont
     except Exception:
         return None
-
-    if df_ranking is None or df_ranking.empty:
-        return None
-
-    df_arte = df_ranking.copy()
-    df_arte["Performance"] = df_arte["Performance"].astype(float).round(1)
-
-    ofensores = tipo == "ofensores"
-    if ofensores:
-        titulo = "OFENSORES OPERACIONAIS"
-        subtitulo = f"{hub} • Rotas abaixo de {limite:.0f}% de conclusão"
-        mensagem = "Acompanhamento para recuperação de performance"
-        cor_primaria = (255, 70, 70)
-        cor_secundaria = (255, 145, 42)
-        cor_card_pct = (115, 22, 30)
-        ordenar_asc = True
-        selo = "ALERTA"
-    else:
-        titulo = "RANKING DE MOTORISTAS"
-        subtitulo = f"{hub} • Entregas finalizadas no dia"
-        mensagem = f"Parabéns aos motoristas com {limite:.0f}% ou mais de conclusão dentro do horário"
-        cor_primaria = (255, 94, 0)
-        cor_secundaria = (255, 214, 10)
-        cor_card_pct = (185, 75, 0)
-        ordenar_asc = False
-        selo = "TOP"
-
-    df_arte = df_arte.sort_values(["Performance", "Entregues"], ascending=[ordenar_asc, False]).reset_index(drop=True)
-
-    grupos = []
-    for perf, grupo in df_arte.groupby("Performance", sort=False):
-        grupos.append((float(perf), grupo.reset_index(drop=True)))
-
-    largura = 1600
-    margem_x = 42
-    topo = 300
-    rodape = 92
-    gap_banda = 18
-    largura_pct = 170
-    gap_pct_lista = 18
-    colunas = 3
-    linha_altura = 34
-    altura_min_banda = 118
-    padding_y_banda = 30
-    largura_lista = largura - (margem_x * 2) - largura_pct - gap_pct_lista
-    gap_coluna = 24
-    largura_coluna = int((largura_lista - (gap_coluna * (colunas - 1))) / colunas)
-
-    bandas = []
-    altura_bandas = 0
-    for perf, grupo in grupos:
-        por_coluna = max(1, math.ceil(len(grupo) / colunas))
-        altura_banda = max(altura_min_banda, padding_y_banda * 2 + por_coluna * linha_altura)
-        bandas.append((perf, grupo, altura_banda, por_coluna))
-        altura_bandas += altura_banda + gap_banda
-
-    altura = max(1100, topo + altura_bandas + rodape + 30)
-
-    # Fundo escuro/futurista com glow laranja/vermelho.
-    img = Image.new("RGB", (largura, altura), (10, 16, 34))
-    draw = ImageDraw.Draw(img)
-    for y in range(altura):
-        t = y / max(altura - 1, 1)
-        r = int(9 + 55 * t)
-        g = int(15 + 12 * t)
-        b = int(35 - 18 * t)
-        draw.line((0, y, largura, y), fill=(r, g, max(b, 16)))
-
-    overlay = Image.new("RGBA", (largura, altura), (0, 0, 0, 0))
-    od = ImageDraw.Draw(overlay)
-    od.ellipse((-260, -230, 580, 470), fill=(*cor_primaria, 80))
-    od.ellipse((largura - 520, -150, largura + 260, 520), fill=(*cor_secundaria, 58))
-    od.ellipse((largura - 620, altura - 420, largura + 240, altura + 260), fill=(*cor_primaria, 42))
-    overlay = overlay.filter(ImageFilter.GaussianBlur(36))
-    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
-    draw = ImageDraw.Draw(img)
-
-    # Linhas diagonais discretas.
-    for x in range(-altura, largura + altura, 120):
-        draw.line((x, 0, x + int(altura * 0.38), altura), fill=(255, 255, 255), width=1)
-    # Escurece as linhas para ficarem sutis via retângulos translúcidos.
-    dark = Image.new("RGBA", (largura, altura), (0, 0, 0, 112))
-    img = Image.alpha_composite(img.convert("RGBA"), dark).convert("RGB")
-    draw = ImageDraw.Draw(img)
-
-    fonte_titulo = _carregar_fonte_pil(70, True)
-    fonte_sub = _carregar_fonte_pil(28, True)
-    fonte_msg = _carregar_fonte_pil(25, True)
-    fonte_data = _carregar_fonte_pil(42, True)
-    fonte_perf = _carregar_fonte_pil(44, True)
-    fonte_selo = _carregar_fonte_pil(19, True)
-    fonte_nome = _carregar_fonte_pil(21, True)
-    fonte_pos = _carregar_fonte_pil(18, True)
-    fonte_footer = _carregar_fonte_pil(24, True)
-    fonte_small = _carregar_fonte_pil(18, True)
 
     data_hoje = agora_brasil().strftime("%d/%m/%Y")
+    melhores = melhores.copy()
+    melhores = melhores.sort_values(by=["Performance", "Entregues"], ascending=[False, False])
 
-    # Header escuro com contorno neon.
-    header = (margem_x, 34, largura - margem_x, 258)
-    draw.rounded_rectangle(header, radius=36, fill=(14, 23, 47), outline=cor_secundaria, width=4)
-    draw.rounded_rectangle((margem_x + 20, 54, margem_x + 178, 220), radius=30, fill=(255, 255, 255), outline=cor_secundaria, width=4)
+    largura = 1400
+    margem = 42
+    topo = 285
+    rodape = 115
+    colunas = 3
+    gap_coluna = 24
+    largura_card = largura - (margem * 2)
+    largura_lista = largura_card - 190
+    largura_coluna = int((largura_lista - (gap_coluna * (colunas - 1))) / colunas)
+    linha_altura = 42
+    altura_banda_header = 82
+    espaco_banda = 22
 
-    # Troféu/check simplificado usando formas vetoriais para não depender de emoji.
-    cx, cy = margem_x + 99, 131
-    if ofensores:
-        draw.polygon([(cx, cy - 56), (cx - 58, cy + 54), (cx + 58, cy + 54)], fill=cor_primaria, outline=(255, 235, 120))
-        draw.text((cx - 9, cy - 8), "!", fill=(255, 255, 255), font=fonte_perf)
-    else:
-        draw.ellipse((cx - 56, cy - 56, cx + 56, cy + 56), fill=cor_primaria, outline=cor_secundaria, width=5)
-        draw.line((cx - 28, cy + 2, cx - 5, cy + 28, cx + 34, cy - 30), fill=(255, 255, 255), width=11)
+    grupos = []
+    for perf in sorted(melhores["Performance"].unique(), reverse=True):
+        grupo = melhores[melhores["Performance"] == perf].copy()
+        qtd_linhas = math.ceil(len(grupo) / colunas)
+        altura_banda = max(150, altura_banda_header + qtd_linhas * linha_altura + 28)
+        grupos.append((perf, grupo, altura_banda))
 
-    draw.text((margem_x + 210, 62), titulo, fill=(255, 255, 255), font=fonte_titulo)
-    draw.text((margem_x + 214, 143), subtitulo, fill=(255, 238, 210), font=fonte_sub)
-    draw.rounded_rectangle((margem_x + 210, 190, margem_x + 960, 238), radius=16, fill=(255, 255, 255), outline=cor_secundaria, width=2)
-    draw.text((margem_x + 242, 196), data_hoje, fill=(210, 48, 25), font=fonte_data)
+    altura = topo + rodape + 60 + sum(altura for _, _, altura in grupos) + (len(grupos) * espaco_banda)
+    altura = max(900, altura)
 
-    # Selo no canto direito.
-    sx, sy = largura - margem_x - 122, 85
-    draw.ellipse((sx, sy, sx + 104, sy + 104), fill=(255, 255, 255), outline=cor_secundaria, width=6)
-    if ofensores:
-        draw.text((sx + 40, sy + 25), "!", fill=cor_primaria, font=fonte_perf)
-    else:
-        draw.line((sx + 25, sy + 57, sx + 47, sy + 76, sx + 81, sy + 31), fill=cor_primaria, width=10)
+    img = Image.new("RGB", (largura, altura), "#ee4d2d")
+    draw = ImageDraw.Draw(img)
 
-    draw.rounded_rectangle((margem_x, 268, largura - margem_x, 306), radius=16, fill=(83, 29, 12) if not ofensores else (80, 12, 18))
-    draw.text((margem_x + 25, 274), mensagem, fill=(255, 255, 255), font=fonte_msg)
+    def fonte(tamanho, negrito=True):
+        candidatos = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if negrito else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "DejaVuSans-Bold.ttf" if negrito else "DejaVuSans.ttf",
+        ]
+        for caminho in candidatos:
+            try:
+                return ImageFont.truetype(caminho, tamanho)
+            except Exception:
+                pass
+        return ImageFont.load_default()
 
-    y = topo + 30
+    fonte_titulo = fonte(64)
+    fonte_sub = fonte(34)
+    fonte_data = fonte(50)
+    fonte_card = fonte(34)
+    fonte_nome = fonte(24)
+    fonte_pos = fonte(22)
+    fonte_pct = fonte(30)
+    fonte_footer = fonte(28)
+
+    def texto_cortado(texto, fonte_usada, largura_max):
+        texto = str(texto or "")
+        if draw.textlength(texto, font=fonte_usada) <= largura_max:
+            return texto
+        while texto and draw.textlength(texto + "...", font=fonte_usada) > largura_max:
+            texto = texto[:-1]
+        return texto + "..."
+
+    # Fundo decorativo
+    draw.rectangle((0, 0, largura, topo), fill="#ff5a00")
+    draw.rectangle((0, topo - 18, largura, topo), fill="#7c2d12")
+    draw.ellipse((largura - 250, 35, largura - 70, 215), fill="#fff7ed", outline="#ffd700", width=8)
+    draw.text((largura - 202, 72), "OK", fill="#ee4d2d", font=fonte_data)
+
+    draw.text((58, 42), "RANKING DE MOTORISTAS", fill="white", font=fonte_titulo)
+    draw.text((58, 124), f"{hub} - Entregas finalizadas no dia", fill="white", font=fonte_sub)
+    draw.rounded_rectangle((330, 180, 1068, 255), radius=18, fill="white", outline="#ffd700", width=5)
+    draw.text((440, 187), data_hoje, fill="#d73516", font=fonte_data)
+    draw.text((58, 256), f"Parabéns aos motoristas com {minimo_ranking:.0f}% ou mais de conclusão", fill="#fff7ed", font=fonte_sub)
+
+    y = topo + 35
     contador_global = 1
-    for perf, grupo, altura_banda, por_coluna in bandas:
-        x_pct = margem_x
-        x_lista = margem_x + largura_pct + gap_pct_lista
-        y2 = y + altura_banda
 
-        # sombra
-        draw.rounded_rectangle((x_pct + 8, y + 10, largura - margem_x + 8, y2 + 10), radius=26, fill=(0, 0, 0))
-        # cards
-        pct_fill = cor_card_pct if perf >= 99 or ofensores else (255, 107, 18)
-        if ofensores:
-            pct_fill = (110, 18, 30) if perf < limite else (155, 58, 38)
-        draw.rounded_rectangle((x_pct, y, x_pct + largura_pct, y2), radius=24, fill=pct_fill)
-        draw.rounded_rectangle((x_lista, y, largura - margem_x, y2), radius=24, fill=(248, 250, 252), outline=cor_secundaria, width=4)
+    for perf, grupo, altura_banda in grupos:
+        x0 = margem
+        y0 = y
+        x1 = largura - margem
+        y1 = y + altura_banda
+        cor_faixa = "#b45309" if perf >= 100 else "#64748b" if perf >= 99 else "#c2410c" if perf >= 98 else "#f97316"
 
-        perf_txt = f"{perf:.1f}%" if perf % 1 else f"{int(perf)}%"
-        draw.text((x_pct + 28, y + 22), perf_txt, fill=(255, 255, 255), font=fonte_perf)
-        draw.text((x_pct + 50, y + 82), selo, fill=(255, 238, 210), font=fonte_selo)
-        if not ofensores:
-            draw.text((x_pct + 39, y2 - 42), "★★★★★"[:5], fill=cor_secundaria, font=fonte_small)
+        draw.rounded_rectangle((x0, y0, x1, y1), radius=22, fill="white", outline="#ffd700", width=5)
+        draw.rounded_rectangle((x0, y0, x0 + 165, y1), radius=22, fill=cor_faixa)
+        draw.text((x0 + 35, y0 + 38), f"{perf:.0f}%", fill="white", font=fonte_data)
+        draw.text((x0 + 28, y0 + 102), "TOP", fill="#fff7ed", font=fonte_card)
 
-        for idx, row in grupo.iterrows():
+        inicio_x = x0 + 190
+        inicio_y = y0 + 26
+        por_coluna = math.ceil(len(grupo) / colunas)
+
+        for idx, row in enumerate(grupo.itertuples(), start=0):
             coluna = idx // por_coluna
-            linha = idx % por_coluna
-            x = x_lista + 28 + coluna * (largura_coluna + gap_coluna)
-            yy = y + padding_y_banda + linha * linha_altura
-            nome = _formatar_nome_ranking(row.get("Motorista", ""))
-            nome = _texto_cortado_pil(draw, nome, fonte_nome, largura_coluna - 72)
-            badge_color = cor_primaria if not ofensores else (210, 48, 55)
-            draw.rounded_rectangle((x, yy - 2, x + 50, yy + 28), radius=7, fill=badge_color)
-            draw.text((x + 8, yy + 1), f"{contador_global:02d}", fill=(255, 255, 255), font=fonte_pos)
-            draw.text((x + 64, yy), nome, fill=(16, 24, 39), font=fonte_nome)
+            pos = idx % por_coluna
+            x = inicio_x + coluna * (largura_coluna + gap_coluna)
+            yy = inicio_y + pos * linha_altura
+
+            nome = texto_cortado(str(row.Motorista).title(), fonte_nome, largura_coluna - 70)
+            draw.rounded_rectangle((x, yy, x + 42, yy + 31), radius=5, fill="#ee4d2d")
+            draw.text((x + 7, yy + 1), f"{contador_global:02d}", fill="white", font=fonte_pos)
+            draw.text((x + 52, yy + 1), nome, fill="#111827", font=fonte_nome)
             contador_global += 1
 
-        y += altura_banda + gap_banda
+        y += altura_banda + espaco_banda
 
-    # Rodapé limpo.
-    draw.rectangle((0, altura - rodape, largura, altura), fill=(70, 24, 10) if not ofensores else (66, 10, 16))
-    draw.text((margem_x + 18, altura - 58), "FOCO  •  PONTUALIDADE  •  COMPROMISSO  •  RESULTADOS", fill=(255, 255, 255), font=fonte_footer)
-    draw.text((largura - 455, altura - 58), "JUNTOS ENTREGAMOS MAIS!", fill=cor_secundaria, font=fonte_footer)
+    draw.rectangle((0, altura - rodape, largura, altura), fill="#7c2d12")
+    draw.text((58, altura - 78), "FOCO  •  PONTUALIDADE  •  COMPROMISSO  •  RESULTADOS", fill="white", font=fonte_footer)
+    draw.text((largura - 430, altura - 78), "JUNTOS ENTREGAMOS MAIS!", fill="#ffd700", font=fonte_footer)
 
     buffer = BytesIO()
-    img.save(buffer, format="PNG", optimize=True)
+    img.save(buffer, format="PNG")
     return buffer.getvalue()
+
 
 def render_ranking_hub(hub):
     rotas = st.session_state.rotas_por_hub.get(hub, [])
@@ -1953,45 +1848,20 @@ def render_ranking_hub(hub):
             type="primary"
         )
 
-    st.markdown("### 🎨 Artes automáticas em PNG")
-    st.caption("As imagens não aparecem como prévia para não poluir a tela. Clique para baixar e enviar no grupo.")
-    col_png1, col_png2 = st.columns([1, 1])
-
-    with col_png1:
-        if melhores.empty:
-            st.info("Sem motoristas para gerar a arte dos melhores.")
+    if not melhores.empty:
+        arte_png = gerar_arte_ranking_png(hub, melhores, minimo_ranking)
+        if arte_png:
+            st.download_button(
+                label=f"🎨 Baixar Arte Ranking - {hub}",
+                data=arte_png,
+                file_name=f"arte_ranking_{hub}_{agora_brasil().strftime('%d_%m_%Y')}.png",
+                mime="image/png",
+                key=f"baixar_arte_ranking_{hub}",
+                type="primary"
+            )
+            st.image(arte_png, caption=f"Prévia da arte - {hub}", use_container_width=True)
         else:
-            arte_melhores = gerar_arte_ranking_png(hub, melhores, minimo_ranking, tipo="melhores")
-            if arte_melhores:
-                st.download_button(
-                    label=f"🏆 Baixar PNG Melhores - {hub}",
-                    data=arte_melhores,
-                    file_name=f"ranking_melhores_{hub}_{agora_brasil().strftime('%d_%m_%Y')}.png",
-                    mime="image/png",
-                    key=f"baixar_png_melhores_{hub}",
-                    type="primary",
-                    use_container_width=True
-                )
-            else:
-                st.warning("Para gerar PNG, instale Pillow: pip install pillow")
-
-    with col_png2:
-        if ofensores.empty:
-            st.info("Sem motoristas para gerar a arte de ofensores.")
-        else:
-            arte_ofensores = gerar_arte_ranking_png(hub, ofensores, limite_ofensores, tipo="ofensores")
-            if arte_ofensores:
-                st.download_button(
-                    label=f"⚠️ Baixar PNG Ofensores - {hub}",
-                    data=arte_ofensores,
-                    file_name=f"ranking_ofensores_{hub}_{agora_brasil().strftime('%d_%m_%Y')}.png",
-                    mime="image/png",
-                    key=f"baixar_png_ofensores_{hub}",
-                    type="primary",
-                    use_container_width=True
-                )
-            else:
-                st.warning("Para gerar PNG, instale Pillow: pip install pillow")
+            st.warning("Para gerar a arte automaticamente, instale Pillow: pip install pillow")
 
     html('<div class="section-title">🏆 Melhores do Dia</div>')
 
