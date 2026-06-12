@@ -1743,12 +1743,6 @@ def render_ranking_hub(hub):
     else:
         for idx, row in enumerate(ofensores.itertuples(), start=1):
             st.markdown(f"**{idx:02d}. {row.Motorista}** — {row.Performance:.1f}%")
-    link_wpp = montar_link_whatsapp(st.session_state.get("hub", "LPE-12"), rota)
-    if link_wpp:
-        st.markdown(f'<a class="wpp-button" href="{link_wpp}" target="_blank">WhatsApp</a>', unsafe_allow_html=True)
-    else:
-        st.markdown('<span class="sem-contato">Sem contato</span>', unsafe_allow_html=True)
-
 
 def render_header(titulo="Dashboard de Hubs", subtitulo="Acompanhe a performance operacional dos hubs em tempo real."):
     c1, c2, c3 = st.columns([0.7, 5, 2])
