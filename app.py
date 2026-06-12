@@ -1668,42 +1668,6 @@ def render_home():
 
 
 def render_dashboard_hub(hub):
-        if rotas_hub:
-        linhas_csv = []
-        for rota in rotas_hub:
-            linhas_csv.append({
-                "Hub": hub,
-                "AT": rota.get("AT", ""),
-                "Driver ID": rota.get("Driver ID", ""),
-                "Motorista": rota.get("Motorista", ""),
-                "Telefone": rota.get("Telefone", ""),
-                "Modal": rota.get("Modal", ""),
-                "Gaiola": rota.get("Gaiola", ""),
-                "Bairro": rota.get("Bairro", ""),
-                "Cluster": rota.get("Cluster", ""),
-                "Hora Bipada": rota.get("Hora Bipada", ""),
-                "Total": rota.get("Total", 0),
-                "Entregues": rota.get("Entregues", 0),
-                "Pendentes": rota.get("Pendentes", 0),
-                "On Hold": rota.get("On Hold", 0),
-                "Performance": rota.get("Performance %", "0.0%"),
-            })
-
-        df_export = pd.DataFrame(linhas_csv) if pd is not None else None
-
-        if df_export is not None:
-            csv_export = df_export.to_csv(index=False, sep=";", encoding="utf-8-sig")
-
-            st.download_button(
-                label=f"📥 Exportar CSV - {hub}",
-                data=csv_export,
-                file_name=f"{hub}_motoristas_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
-                mime="text/csv",
-                key=f"exportar_csv_{hub}",
-                type="primary"
-            )
-        else:
-            st.warning("Para exportar CSV, instale pandas: pip install pandas")
     dados = st.session_state.hubs[hub]
     rotas_hub = st.session_state.rotas_por_hub.get(hub, [])
     ultima_atualizacao_hub = dados.get("Última Atualização", "Sem atualização")
@@ -1735,6 +1699,45 @@ def render_dashboard_hub(hub):
         html(f'<div class="progress-card"><div class="progress-title">Meta 95%</div><div class="progress-bg"><div class="fill orange-bar" style="width:{min(progresso_meta,1)*100:.1f}%;"></div></div><div class="progress-info"><span>Meta: {meta_95:,} entregas</span><b>Faltam {faltam_meta:,}</b></div></div>'.replace(",", "."))
     with p3:
         html(f'<div class="progress-card"><div class="progress-title">Falta para concluir 100%</div><div class="progress-bg"><div class="fill blue-bar" style="width:{falta*100:.1f}%;"></div></div><div class="progress-info"><span>Faltam {pendentes:,}</span><b style="color:#0066ff;">{falta*100:.1f}%</b></div></div>'.replace(",", "."))
+
+    if rotas_hub:
+        linhas_csv = []
+        for rota in rotas_hub:
+            linhas_csv.append({
+                "Hub": hub,
+                "AT": rota.get("AT", ""),
+                "Driver ID": rota.get("Driver ID", ""),
+                "Motorista": rota.get("Motorista", ""),
+                "Telefone": rota.get("Telefone", ""),
+                "Modal": rota.get("Modal", ""),
+                "Gaiola": rota.get("Gaiola", ""),
+                "Bairro": rota.get("Bairro", ""),
+                "Cluster": rota.get("Cluster", ""),
+                "Hora Bipada": rota.get("Hora Bipada", ""),
+                "Hora Atribuição": rota.get("Hora Atribuição", ""),
+                "Cidade": rota.get("Cidade", ""),
+                "Station": rota.get("Station", ""),
+                "Total": rota.get("Total", 0),
+                "Entregues": rota.get("Entregues", 0),
+                "Pendentes": rota.get("Pendentes", 0),
+                "On Hold": rota.get("On Hold", 0),
+                "Performance": rota.get("Performance %", "0.0%"),
+            })
+
+        output = StringIO()
+        writer = csv.DictWriter(output, fieldnames=list(linhas_csv[0].keys()), delimiter=";")
+        writer.writeheader()
+        writer.writerows(linhas_csv)
+
+        st.download_button(
+            label=f"📥 Exportar CSV - {hub}",
+            data="\ufeff" + output.getvalue(),
+            file_name=f"{hub}_motoristas_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
+            mime="text/csv",
+            key=f"exportar_csv_{hub}",
+            type="primary",
+            use_container_width=True
+        )
 
     if rotas_hub:
         html('<div class="section-title">Lista de ATs do Hub</div>')
