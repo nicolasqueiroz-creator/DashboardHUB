@@ -1625,7 +1625,12 @@ def detalhes_at(rota):
 
     for rota in rotas:
         nome = str(rota.get("Motorista", "") or "").strip()
-        if not nome or nome.upper() in ["NÃO BIPADA", "NAO BIPADA", "SEM MOTORISTA"]:
+
+        if not nome or nome.upper() in [
+            "NÃO BIPADA",
+            "NAO BIPADA",
+            "SEM MOTORISTA"
+        ]:
             continue
 
         total = int(rota.get("Total") or 0)
@@ -1634,7 +1639,7 @@ def detalhes_at(rota):
         if total <= 0:
             continue
 
-        performance = entregues / total * 100
+        performance = (entregues / total) * 100
 
         linhas.append({
             "Motorista": nome.title(),
@@ -1648,6 +1653,17 @@ def detalhes_at(rota):
     if pd is None:
         return []
 
+    df = pd.DataFrame(linhas)
+
+    if df.empty:
+        return df
+
+    df = df.sort_values(
+        by=["Performance", "Entregues"],
+        ascending=[False, False]
+    )
+
+    return df
     df = pd.DataFrame(linhas)
 
     if df.empty:
