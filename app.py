@@ -274,50 +274,128 @@ def _supabase_ler_mapa(tabela, coluna_chave):
         return None
 
 
+def _linha_supabase_generica(tabela, coluna_chave, chave, dados):
+    """
+    Monta uma linha compatível com dois modelos de tabela:
+    - Modelo JSONB: chave + dados
+    - Modelo aberto: usuario/nome/email/senha_hash/perfil/hub/ativo...
+    A tentativa JSONB é feita primeiro; se a tabela não tiver a coluna dados,
+    as funções abaixo fazem fallback automático para o modelo aberto.
+    """
+    dados = dados if isinstance(dados, dict) else {}
+    return {
+        coluna_chave: str(chave),
+        "dados": dados,
+        "atualizado_em": agora_brasil().isoformat()
+    }
+
+
+def _linha_supabase_aberta(tabela, coluna_chave, chave, dados):
+    """Monta linha para tabelas Supabase com colunas abertas."""
+    dados = dados if isinstance(dados, dict) else {}
+    linha = {coluna_chave: str(chave)}
+
+    if tabela == SUPABASE_TABLE_USUARIOS:
+        linha.update({
+            "nome": dados.get("nome", ""),
+            "email": dados.get("email", ""),
+            "senha_hash": dados.get("senha_hash", ""),
+            "perfil": dados.get("perfil", "analista"),
+            "hub": dados.get("hub", ""),
+            "ativo": bool(dados.get("ativo", True)),
+            "atualizado_em": agora_brasil().isoformat(),
+        })
+        return linha
+
+    if tabela == SUPABASE_TABLE_PENDENTES:
+        linha.update({
+            "nome": dados.get("nome", ""),
+            "email": dados.get("email", ""),
+            "senha_hash": dados.get("senha_hash", ""),
+            "perfil_solicitado": dados.get("perfil_solicitado", "analista"),
+            "hub": dados.get("hub", ""),
+            "status": dados.get("status", "pendente"),
+            "criado_em": dados.get("criado_em", ""),
+            "atualizado_em": agora_brasil().isoformat(),
+        })
+        return linha
+
+    if tabela == SUPABASE_TABLE_SESSOES:
+        linha.update({
+            "usuario": dados.get("usuario", ""),
+            "criado_em": dados.get("criado_em", ""),
+            "atualizado_em": agora_brasil().isoformat(),
+        })
+        return linha
+
+    linha.update(dados)
+    linha["atualizado_em"] = agora_brasil().isoformat()
+    return linha
+
+
 def _supabase_salvar_mapa(tabela, coluna_chave, mapa):
-    """Sincroniza tabela no formato chave + dados(jsonb). Remove registros antigos e grava o mapa atual."""
+    """
+    Sincroniza registros no Supabase.
+    Funciona com tabela no formato JSONB (chave + dados) e também com tabela
+    em colunas abertas, como usuarios(usuario, nome, email, senha_hash...).
+    """
     sb = get_supabase()
     if not sb:
         return False
+
+    mapa = mapa if isinstance(mapa, dict) else {}
+
+    linhas_json = []
+    linhas_abertas = []
+    for chave, dados in mapa.items():
+        if not chave or not isinstance(dados, dict):
+            continue
+        linhas_json.append(_linha_supabase_generica(tabela, coluna_chave, chave, dados))
+        linhas_abertas.append(_linha_supabase_aberta(tabela, coluna_chave, chave, dados))
+
+    # 1ª tentativa: modelo JSONB: chave + dados
     try:
-        # Remove todos os registros para refletir rejeições, logout e alterações feitas no app.
-        # Usa neq com string impossível porque o Supabase exige filtro em delete.
         sb.table(tabela).delete().neq(coluna_chave, "__registro_inexistente__").execute()
-
-        linhas = []
-        for chave, dados in (mapa or {}).items():
-            if not chave or not isinstance(dados, dict):
-                continue
-            linhas.append({
-                coluna_chave: str(chave),
-                "dados": dados,
-                "atualizado_em": agora_brasil().isoformat()
-            })
-
-        if linhas:
-            sb.table(tabela).upsert(linhas, on_conflict=coluna_chave).execute()
+        if linhas_json:
+            sb.table(tabela).upsert(linhas_json, on_conflict=coluna_chave).execute()
         return True
-    except Exception as e:
-        safe_log(f"Erro ao salvar {tabela} no Supabase: {e}")
+    except Exception as e_json:
+        safe_log(f"Fallback Supabase para {tabela} em colunas abertas: {e_json}")
+
+    # 2ª tentativa: modelo aberto
+    try:
+        sb.table(tabela).delete().neq(coluna_chave, "__registro_inexistente__").execute()
+        if linhas_abertas:
+            sb.table(tabela).upsert(linhas_abertas, on_conflict=coluna_chave).execute()
+        return True
+    except Exception as e_aberto:
+        safe_log(f"Erro ao salvar {tabela} no Supabase: {e_aberto}")
         return False
-
-
 
 
 def _supabase_upsert_um_registro(tabela, coluna_chave, chave, dados):
-    """Salva um único registro no Supabase sem apagar os demais."""
+    """Salva um único registro sem apagar os demais. Aceita JSONB ou colunas abertas."""
     sb = get_supabase()
     if not sb:
         return False
+
     try:
-        sb.table(tabela).upsert({
-            coluna_chave: str(chave),
-            "dados": dados if isinstance(dados, dict) else {},
-            "atualizado_em": agora_brasil().isoformat()
-        }, on_conflict=coluna_chave).execute()
+        sb.table(tabela).upsert(
+            _linha_supabase_generica(tabela, coluna_chave, chave, dados),
+            on_conflict=coluna_chave
+        ).execute()
         return True
-    except Exception as e:
-        safe_log(f"Erro ao salvar registro em {tabela}: {e}")
+    except Exception as e_json:
+        safe_log(f"Fallback upsert Supabase para {tabela} em colunas abertas: {e_json}")
+
+    try:
+        sb.table(tabela).upsert(
+            _linha_supabase_aberta(tabela, coluna_chave, chave, dados),
+            on_conflict=coluna_chave
+        ).execute()
+        return True
+    except Exception as e_aberto:
+        safe_log(f"Erro ao salvar registro em {tabela}: {e_aberto}")
         return False
 
 
