@@ -177,6 +177,62 @@ def carregar_supabase():
         return False
 
 
+def sincronizar_widgets_config_hub(hub):
+    """Atualiza os campos da aba Configuração com o que acabou de vir do Supabase."""
+    try:
+        config = st.session_state.config_por_hub.get(hub, config_default())
+        st.session_state[f"bash_list_{hub}"] = config.get("bash_list", "")
+        st.session_state[f"bash_v2_{hub}"] = config.get("bash_v2", "")
+        st.session_state[f"ats_{hub}"] = config.get("ats", "")
+        st.session_state[f"database_{hub}"] = config.get("db_link", st.session_state.db_links_por_hub.get(hub, ""))
+    except Exception as e:
+        safe_log(f"Erro ao sincronizar campos do hub {hub}: {e}")
+
+
+def carregar_hub_supabase(hub, atualizar_widgets=False):
+    """
+    Carrega apenas um hub do Supabase.
+    Isso evita usar cache antigo da sessão e impede sobrescrever alterações feitas por outro analista.
+    """
+    try:
+        if hub not in HUBS:
+            return False
+
+        sb = get_supabase()
+        if not sb:
+            return False
+
+        hubs_resp = (
+            sb.table(SUPABASE_TABLE_HUBS)
+            .select("*")
+            .eq("hub", hub)
+            .execute()
+        )
+        for item in hubs_resp.data or []:
+            if isinstance(item.get("dados"), dict):
+                aplicar_dados_hub_carregados(hub, item.get("dados", {}))
+
+        rotas_resp = (
+            sb.table(SUPABASE_TABLE_ROTAS)
+            .select("*")
+            .eq("hub", hub)
+            .execute()
+        )
+        for item in rotas_resp.data or []:
+            if isinstance(item.get("rotas"), list):
+                st.session_state.rotas_por_hub[hub] = item["rotas"]
+
+        if atualizar_widgets:
+            sincronizar_widgets_config_hub(hub)
+
+        st.session_state[f"ultimo_refresh_supabase_{hub}"] = agora_brasil().isoformat()
+        return True
+
+    except Exception as e:
+        safe_log(f"Erro ao carregar {hub} no Supabase: {e}")
+        return False
+
+
 def agora_brasil():
     return datetime.now(FUSO_BRASIL)
 
@@ -947,7 +1003,7 @@ def carregar_estado_persistido():
     return estado if isinstance(estado, dict) else {}
 
 
-def salvar_estado_persistido():
+def salvar_estado_persistido(hub_para_salvar=None):
     try:
         estado = {
             "hub": st.session_state.get("hub", "LPE-12"),
@@ -965,8 +1021,9 @@ def salvar_estado_persistido():
         tmp_path.replace(STATE_PATH)
         salvar_rotas_cache()
 
-        for hub in HUBS:
-            salvar_hub_supabase(hub)
+        hub_alvo = hub_para_salvar or st.session_state.get("hub")
+        if hub_alvo in HUBS:
+            salvar_hub_supabase(hub_alvo)
 
     except Exception as e:
         try:
@@ -2189,6 +2246,12 @@ def render_dashboard_hub(hub):
 def render_configuracao_hub(hub):
     html(f'<div class="config-title">⚙️ Configuração Operacional - {hub}</div><div class="config-subtitle">Cole o Bash LIST, o Bash V2 e as ATs específicas deste hub.</div>')
 
+    if st.button(f"🔄 Recarregar configurações salvas do {hub}", key=f"reload_config_{hub}", type="primary"):
+        carregar_hub_supabase(hub, atualizar_widgets=True)
+        st.success(f"Configurações do {hub} recarregadas do Supabase.")
+        time.sleep(0.5)
+        st.rerun()
+
     config_hub = st.session_state.config_por_hub.get(hub, config_default())
 
     if f"bash_list_{hub}" not in st.session_state:
@@ -2244,7 +2307,7 @@ def render_configuracao_hub(hub):
             st.session_state.contatos_por_hub[hub] = contatos_database
             if st.session_state.rotas_por_hub.get(hub):
                 st.session_state.rotas_por_hub[hub] = aplicar_contatos_nas_rotas(st.session_state.rotas_por_hub[hub], contatos_database)
-            salvar_estado_persistido()
+            salvar_estado_persistido(hub)
             st.success(f"Contatos carregados para {hub}: {len(contatos_database)}")
         except Exception as e:
             st.error(f"Não foi possível carregar a Database: {e}")
@@ -2307,7 +2370,7 @@ def render_configuracao_hub(hub):
                 rotas = aplicar_contatos_nas_rotas(rotas, contatos_database)
                 st.session_state.rotas_por_hub[hub] = rotas
                 atualizar_hub_com_rotas(hub, rotas)
-                salvar_estado_persistido()
+                salvar_estado_persistido(hub)
                 st.success(f"Atualização do {hub} finalizada.")
                 st.session_state.tela = "hub"; st.session_state.hub = hub
                 token_atual = st.session_state.get("auth_token") or st.query_params.get("auth", "")
@@ -2406,6 +2469,11 @@ else:
     if not usuario_pode_acessar_hub(hub_atual):
         render_acesso_negado(hub_atual)
         st.stop()
+
+    # Recarrega do Supabase ao entrar/trocar de hub para buscar atualizações de outros analistas.
+    if st.session_state.get("_ultimo_hub_recarregado") != hub_atual:
+        carregar_hub_supabase(hub_atual, atualizar_widgets=True)
+        st.session_state["_ultimo_hub_recarregado"] = hub_atual
 
     render_header(
         titulo=f"Dashboard {hub_atual}",
