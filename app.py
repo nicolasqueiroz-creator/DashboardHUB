@@ -287,6 +287,41 @@ def _supabase_salvar_mapa(tabela, coluna_chave, mapa):
         return False
 
 
+
+
+def _supabase_upsert_um_registro(tabela, coluna_chave, chave, dados):
+    """Salva um único registro no Supabase sem apagar os demais."""
+    sb = get_supabase()
+    if not sb:
+        return False
+    try:
+        sb.table(tabela).upsert({
+            coluna_chave: str(chave),
+            "dados": dados if isinstance(dados, dict) else {},
+            "atualizado_em": agora_brasil().isoformat()
+        }, on_conflict=coluna_chave).execute()
+        return True
+    except Exception as e:
+        safe_log(f"Erro ao salvar registro em {tabela}: {e}")
+        return False
+
+
+def salvar_usuario_individual(usuario, dados):
+    """Cria/atualiza um usuário específico no Supabase e mantém backup local."""
+    usuario = normalizar_login(usuario)
+    if not usuario or not isinstance(dados, dict):
+        return False
+
+    ok_supabase = _supabase_upsert_um_registro(SUPABASE_TABLE_USUARIOS, "usuario", usuario, dados)
+
+    usuarios_local = _carregar_json_local(USERS_PATH, {})
+    if not isinstance(usuarios_local, dict):
+        usuarios_local = {}
+    usuarios_local[usuario] = dados
+    _salvar_json_local(USERS_PATH, usuarios_local)
+
+    return ok_supabase or True
+
 def _corrigir_usuarios_legado(usuarios):
     usuarios = usuarios if isinstance(usuarios, dict) else {}
     alterou = False
@@ -330,8 +365,9 @@ def salvar_usuarios(usuarios):
     if _supabase_salvar_mapa(SUPABASE_TABLE_USUARIOS, "usuario", usuarios):
         # Mantém um backup local, mas a fonte oficial passa a ser o Supabase.
         _salvar_json_local(USERS_PATH, usuarios)
-        return
+        return True
     _salvar_json_local(USERS_PATH, usuarios)
+    return False
 
 
 def carregar_pendentes():
@@ -704,14 +740,27 @@ def render_admin_usuarios():
             criar = st.form_submit_button("Criar usuário", use_container_width=True)
         if criar:
             usuario_norm = normalizar_login(usuario)
-            if not nome or not usuario_norm or not email or not senha:
+            email_norm = normalizar_login(email)
+
+            if not nome.strip() or not usuario_norm or not email_norm or not senha:
                 st.error("Preencha todos os campos.")
             elif usuario_norm in usuarios:
                 st.error("Usuário já existe.")
+            elif any(email_norm == normalizar_login(d.get("email", "")) for d in usuarios.values() if isinstance(d, dict)):
+                st.error("Esse e-mail já está cadastrado.")
             else:
-                usuarios[usuario_norm] = {"nome": nome, "email": normalizar_login(email), "senha_hash": hash_senha(senha), "perfil": perfil, "hub": hub, "ativo": True}
-                salvar_usuarios(usuarios)
-                st.success("Usuário criado.")
+                novo_usuario = {
+                    "nome": nome.strip(),
+                    "email": email_norm,
+                    "senha_hash": hash_senha(senha),
+                    "perfil": perfil,
+                    "hub": hub,
+                    "ativo": True,
+                }
+                usuarios[usuario_norm] = novo_usuario
+                salvar_usuario_individual(usuario_norm, novo_usuario)
+                st.success("Usuário criado e salvo no Supabase.")
+                time.sleep(0.8)
                 st.rerun()
 
 # =========================================================
