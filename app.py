@@ -241,17 +241,32 @@ def _salvar_json_local(path, dados):
 
 
 def _supabase_ler_mapa(tabela, coluna_chave):
-    """Lê tabelas no formato: chave + dados(jsonb)."""
+    """
+    Lê registros do Supabase.
+    Aceita dois formatos de tabela:
+    1) usuario/token + dados(jsonb)
+    2) colunas abertas: usuario, nome, email, senha_hash, perfil, hub, ativo...
+    """
     sb = get_supabase()
     if not sb:
         return None
     try:
-        resp = sb.table(tabela).select(f"{coluna_chave},dados").execute()
+        resp = sb.table(tabela).select("*").execute()
         resultado = {}
         for item in resp.data or []:
             chave = item.get(coluna_chave)
-            dados = item.get("dados", {})
-            if chave and isinstance(dados, dict):
+            if not chave:
+                continue
+
+            if isinstance(item.get("dados"), dict):
+                dados = item.get("dados", {})
+            else:
+                dados = {
+                    k: v for k, v in item.items()
+                    if k not in [coluna_chave, "id", "created_at", "updated_at", "atualizado_em"]
+                }
+
+            if isinstance(dados, dict):
                 resultado[str(chave)] = dados
         return resultado
     except Exception as e:
@@ -320,7 +335,7 @@ def salvar_usuario_individual(usuario, dados):
     usuarios_local[usuario] = dados
     _salvar_json_local(USERS_PATH, usuarios_local)
 
-    return ok_supabase or True
+    return bool(ok_supabase)
 
 def _corrigir_usuarios_legado(usuarios):
     usuarios = usuarios if isinstance(usuarios, dict) else {}
@@ -336,16 +351,26 @@ def _corrigir_usuarios_legado(usuarios):
 def carregar_usuarios():
     # Prioridade: Supabase. Fallback: arquivo local apenas se Supabase não estiver configurado/indisponível.
     try:
-        usuarios = _supabase_ler_mapa(SUPABASE_TABLE_USUARIOS, "usuario")
-        if usuarios is not None:
-            if not usuarios:
-                usuarios = usuario_padrao_admin()
-                salvar_usuarios(usuarios)
-                return usuarios
-            usuarios, alterou = _corrigir_usuarios_legado(usuarios)
+        usuarios_supabase = _supabase_ler_mapa(SUPABASE_TABLE_USUARIOS, "usuario")
+        if usuarios_supabase is not None:
+            usuarios_local = _carregar_json_local(USERS_PATH, {})
+            if not isinstance(usuarios_local, dict):
+                usuarios_local = {}
+
+            # Se o Supabase ainda estiver vazio, usa o backup local antes de recriar apenas o admin.
+            if not usuarios_supabase and usuarios_local:
+                usuarios_supabase = usuarios_local
+                salvar_usuarios(usuarios_supabase)
+
+            if not usuarios_supabase:
+                usuarios_supabase = usuario_padrao_admin()
+                salvar_usuarios(usuarios_supabase)
+                return usuarios_supabase
+
+            usuarios_supabase, alterou = _corrigir_usuarios_legado(usuarios_supabase)
             if alterou:
-                salvar_usuarios(usuarios)
-            return usuarios
+                salvar_usuarios(usuarios_supabase)
+            return usuarios_supabase
     except Exception as e:
         safe_log(f"Falha ao carregar usuários no Supabase: {e}")
 
@@ -758,10 +783,12 @@ def render_admin_usuarios():
                     "ativo": True,
                 }
                 usuarios[usuario_norm] = novo_usuario
-                salvar_usuario_individual(usuario_norm, novo_usuario)
-                st.success("Usuário criado e salvo no Supabase.")
-                time.sleep(0.8)
-                st.rerun()
+                if salvar_usuario_individual(usuario_norm, novo_usuario):
+                    st.success("Usuário criado e salvo no Supabase.")
+                    time.sleep(0.8)
+                    st.rerun()
+                else:
+                    st.error("Não consegui salvar no Supabase. Confira SUPABASE_URL, SUPABASE_KEY e a tabela usuarios.")
 
 # =========================================================
 # ESTADO / CACHE
