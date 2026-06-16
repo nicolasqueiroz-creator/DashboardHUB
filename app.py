@@ -466,7 +466,8 @@ def restaurar_sessao_por_token():
     if not token:
         return False
 
-    sessao = carregar_sessoes().get(token)
+    sessoes = carregar_sessoes()
+    sessao = sessoes.get(token)
     if not sessao:
         return False
 
