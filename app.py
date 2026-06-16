@@ -59,6 +59,8 @@ SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 SUPABASE_TABLE_HUBS = "hubs_status"
 SUPABASE_TABLE_ROTAS = "rotas_cache"
 SUPABASE_TABLE_USUARIOS = "usuarios"
+SUPABASE_TABLE_PENDENTES = "cadastros_pendentes"
+SUPABASE_TABLE_SESSOES = "sessoes"
 
 def safe_log(msg):
     try:
@@ -219,70 +221,153 @@ def usuario_padrao_admin():
     }
 
 
-def carregar_usuarios():
+def _carregar_json_local(path, padrao=None):
     try:
-        if not USERS_PATH.exists():
-            usuarios = usuario_padrao_admin()
-            salvar_usuarios(usuarios)
-            return usuarios
-        with open(USERS_PATH, "r", encoding="utf-8") as f:
-            usuarios = json.load(f)
-        alterou = False
-        for _, dados in usuarios.items():
-            if "senha" in dados and "senha_hash" not in dados:
-                dados["senha_hash"] = hash_senha(dados.get("senha", ""))
-                dados.pop("senha", None)
-                alterou = True
-        if alterou:
-            salvar_usuarios(usuarios)
-        return usuarios
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+                return dados if isinstance(dados, dict) else (padrao or {})
     except Exception:
-        return usuario_padrao_admin()
+        pass
+    return padrao or {}
+
+
+def _salvar_json_local(path, dados):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _supabase_ler_mapa(tabela, coluna_chave):
+    """Lê tabelas no formato: chave + dados(jsonb)."""
+    sb = get_supabase()
+    if not sb:
+        return None
+    try:
+        resp = sb.table(tabela).select(f"{coluna_chave},dados").execute()
+        resultado = {}
+        for item in resp.data or []:
+            chave = item.get(coluna_chave)
+            dados = item.get("dados", {})
+            if chave and isinstance(dados, dict):
+                resultado[str(chave)] = dados
+        return resultado
+    except Exception as e:
+        safe_log(f"Erro ao carregar {tabela} do Supabase: {e}")
+        return None
+
+
+def _supabase_salvar_mapa(tabela, coluna_chave, mapa):
+    """Sincroniza tabela no formato chave + dados(jsonb). Remove registros antigos e grava o mapa atual."""
+    sb = get_supabase()
+    if not sb:
+        return False
+    try:
+        # Remove todos os registros para refletir rejeições, logout e alterações feitas no app.
+        # Usa neq com string impossível porque o Supabase exige filtro em delete.
+        sb.table(tabela).delete().neq(coluna_chave, "__registro_inexistente__").execute()
+
+        linhas = []
+        for chave, dados in (mapa or {}).items():
+            if not chave or not isinstance(dados, dict):
+                continue
+            linhas.append({
+                coluna_chave: str(chave),
+                "dados": dados,
+                "atualizado_em": agora_brasil().isoformat()
+            })
+
+        if linhas:
+            sb.table(tabela).upsert(linhas, on_conflict=coluna_chave).execute()
+        return True
+    except Exception as e:
+        safe_log(f"Erro ao salvar {tabela} no Supabase: {e}")
+        return False
+
+
+def _corrigir_usuarios_legado(usuarios):
+    usuarios = usuarios if isinstance(usuarios, dict) else {}
+    alterou = False
+    for _, dados in usuarios.items():
+        if isinstance(dados, dict) and "senha" in dados and "senha_hash" not in dados:
+            dados["senha_hash"] = hash_senha(dados.get("senha", ""))
+            dados.pop("senha", None)
+            alterou = True
+    return usuarios, alterou
+
+
+def carregar_usuarios():
+    # Prioridade: Supabase. Fallback: arquivo local apenas se Supabase não estiver configurado/indisponível.
+    try:
+        usuarios = _supabase_ler_mapa(SUPABASE_TABLE_USUARIOS, "usuario")
+        if usuarios is not None:
+            if not usuarios:
+                usuarios = usuario_padrao_admin()
+                salvar_usuarios(usuarios)
+                return usuarios
+            usuarios, alterou = _corrigir_usuarios_legado(usuarios)
+            if alterou:
+                salvar_usuarios(usuarios)
+            return usuarios
+    except Exception as e:
+        safe_log(f"Falha ao carregar usuários no Supabase: {e}")
+
+    usuarios = _carregar_json_local(USERS_PATH, {})
+    if not usuarios:
+        usuarios = usuario_padrao_admin()
+        salvar_usuarios(usuarios)
+        return usuarios
+    usuarios, alterou = _corrigir_usuarios_legado(usuarios)
+    if alterou:
+        salvar_usuarios(usuarios)
+    return usuarios
 
 
 def salvar_usuarios(usuarios):
-    try:
-        with open(USERS_PATH, "w", encoding="utf-8") as f:
-            json.dump(usuarios, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    usuarios = usuarios if isinstance(usuarios, dict) else {}
+    if _supabase_salvar_mapa(SUPABASE_TABLE_USUARIOS, "usuario", usuarios):
+        # Mantém um backup local, mas a fonte oficial passa a ser o Supabase.
+        _salvar_json_local(USERS_PATH, usuarios)
+        return
+    _salvar_json_local(USERS_PATH, usuarios)
 
 
 def carregar_pendentes():
     try:
-        if PENDING_USERS_PATH.exists():
-            with open(PENDING_USERS_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
+        pendentes = _supabase_ler_mapa(SUPABASE_TABLE_PENDENTES, "usuario")
+        if pendentes is not None:
+            return pendentes
+    except Exception as e:
+        safe_log(f"Falha ao carregar pendentes no Supabase: {e}")
+    return _carregar_json_local(PENDING_USERS_PATH, {})
 
 
 def salvar_pendentes(pendentes):
-    try:
-        with open(PENDING_USERS_PATH, "w", encoding="utf-8") as f:
-            json.dump(pendentes, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    pendentes = pendentes if isinstance(pendentes, dict) else {}
+    if _supabase_salvar_mapa(SUPABASE_TABLE_PENDENTES, "usuario", pendentes):
+        _salvar_json_local(PENDING_USERS_PATH, pendentes)
+        return
+    _salvar_json_local(PENDING_USERS_PATH, pendentes)
 
 
 def carregar_sessoes():
     try:
-        if SESSIONS_PATH.exists():
-            with open(SESSIONS_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
+        sessoes = _supabase_ler_mapa(SUPABASE_TABLE_SESSOES, "token")
+        if sessoes is not None:
+            return sessoes
+    except Exception as e:
+        safe_log(f"Falha ao carregar sessões no Supabase: {e}")
+    return _carregar_json_local(SESSIONS_PATH, {})
 
 
 def salvar_sessoes(sessoes):
-    try:
-        with open(SESSIONS_PATH, "w", encoding="utf-8") as f:
-            json.dump(sessoes, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
+    sessoes = sessoes if isinstance(sessoes, dict) else {}
+    if _supabase_salvar_mapa(SUPABASE_TABLE_SESSOES, "token", sessoes):
+        _salvar_json_local(SESSIONS_PATH, sessoes)
+        return
+    _salvar_json_local(SESSIONS_PATH, sessoes)
 
 def encontrar_usuario_por_login(login_digitado, usuarios):
     login = normalizar_login(login_digitado)
