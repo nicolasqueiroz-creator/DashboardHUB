@@ -414,21 +414,17 @@ def salvar_pendentes(pendentes):
 
 
 def carregar_sessoes():
-    try:
-        sessoes = _supabase_ler_mapa(SUPABASE_TABLE_SESSOES, "token")
-        if sessoes is not None:
-            return sessoes
-    except Exception as e:
-        safe_log(f"Falha ao carregar sessões no Supabase: {e}")
+    """
+    Sessões ficam locais para não derrubar login ao trocar de página/aba.
+    Usuários e pendentes continuam no Supabase; sessão é só controle do navegador.
+    """
     return _carregar_json_local(SESSIONS_PATH, {})
 
 
 def salvar_sessoes(sessoes):
     sessoes = sessoes if isinstance(sessoes, dict) else {}
-    if _supabase_salvar_mapa(SUPABASE_TABLE_SESSOES, "token", sessoes):
-        _salvar_json_local(SESSIONS_PATH, sessoes)
-        return
     _salvar_json_local(SESSIONS_PATH, sessoes)
+
 
 def encontrar_usuario_por_login(login_digitado, usuarios):
     login = normalizar_login(login_digitado)
@@ -440,8 +436,76 @@ def encontrar_usuario_por_login(login_digitado, usuarios):
 
 def criar_sessao(usuario, dados):
     token = uuid.uuid4().hex
+    usuario_norm = normalizar_login(usuario)
+
     sessoes = carregar_sessoes()
-    sessoes[token] = {"usuario": usuario, "criado_em": agora_brasil().strftime("%d/%m/%Y %H:%M")}
+    sessoes[token] = {
+        "usuario": usuario_norm,
+        "criado_em": agora_brasil().strftime("%d/%m/%Y %H:%M")
+    }
+    salvar_sessoes(sessoes)
+
+    st.session_state.auth_token = token
+    st.session_state.logado = True
+    st.session_state.usuario_login = usuario_norm
+    st.session_state.usuario_nome = dados.get("nome", usuario_norm)
+    st.session_state.usuario_email = dados.get("email", "")
+    st.session_state.perfil = dados.get("perfil", "analista")
+    st.session_state.hub_permitido = dados.get("hub", "")
+
+    st.query_params["auth"] = token
+    st.query_params["u"] = usuario_norm
+    return token
+
+
+def restaurar_sessao_por_token():
+    """
+    Mantém o login ao navegar pelo app.
+
+    Ordem de restauração:
+    1) session_state já logado.
+    2) token salvo em sessoes.json local.
+    3) fallback pelo parâmetro u da URL, validando que o usuário existe e está ativo.
+       Esse fallback evita voltar ao login caso o Streamlit reinicie a sessão no mobile.
+    """
+    if st.session_state.get("logado", False):
+        token_atual = st.session_state.get("auth_token") or st.query_params.get("auth", "")
+        usuario_atual = st.session_state.get("usuario_login") or st.query_params.get("u", "")
+        if token_atual:
+            st.query_params["auth"] = token_atual
+        if usuario_atual:
+            st.query_params["u"] = usuario_atual
+        return True
+
+    token = st.session_state.get("auth_token") or st.query_params.get("auth", "")
+    usuario_url = normalizar_login(st.query_params.get("u", ""))
+
+    usuarios = carregar_usuarios()
+
+    usuario = ""
+    if token:
+        sessoes = carregar_sessoes()
+        sessao = sessoes.get(token, {})
+        usuario = normalizar_login(sessao.get("usuario", ""))
+
+    if not usuario and usuario_url:
+        usuario = usuario_url
+
+    if not usuario:
+        return False
+
+    dados = usuarios.get(usuario)
+    if not dados or not dados.get("ativo", False):
+        return False
+
+    if not token:
+        token = uuid.uuid4().hex
+
+    sessoes = carregar_sessoes()
+    sessoes[token] = {
+        "usuario": usuario,
+        "criado_em": sessoes.get(token, {}).get("criado_em", agora_brasil().strftime("%d/%m/%Y %H:%M"))
+    }
     salvar_sessoes(sessoes)
 
     st.session_state.auth_token = token
@@ -451,48 +515,21 @@ def criar_sessao(usuario, dados):
     st.session_state.usuario_email = dados.get("email", "")
     st.session_state.perfil = dados.get("perfil", "analista")
     st.session_state.hub_permitido = dados.get("hub", "")
+
     st.query_params["auth"] = token
-    return token
-
-
-def restaurar_sessao_por_token():
-    if st.session_state.get("logado", False):
-        token_atual = st.session_state.get("auth_token") or st.query_params.get("auth", "")
-        if token_atual:
-            st.query_params["auth"] = token_atual
-        return True
-
-    token = st.session_state.get("auth_token") or st.query_params.get("auth", "")
-    if not token:
-        return False
-
-    sessoes = carregar_sessoes()
-    sessao = sessoes.get(token)
-    if not sessao:
-        return False
-
-    usuarios = carregar_usuarios()
-    usuario = sessao.get("usuario")
-    dados = usuarios.get(usuario)
-    if not dados or not dados.get("ativo", False):
-        return False
-
-    st.session_state.auth_token = token
-    st.session_state.logado = True
-    st.session_state.usuario_login = usuario
-    st.session_state.usuario_nome = dados.get("nome", usuario)
-    st.session_state.usuario_email = dados.get("email", "")
-    st.session_state.perfil = dados.get("perfil", "analista")
-    st.session_state.hub_permitido = dados.get("hub", "")
-    st.query_params["auth"] = token
+    st.query_params["u"] = usuario
     return True
 
 
 def auth_query(extra=""):
     token = st.session_state.get("auth_token") or st.query_params.get("auth", "")
+    usuario = st.session_state.get("usuario_login") or st.query_params.get("u", "")
+
     partes = []
     if token:
         partes.append(f"auth={token}")
+    if usuario:
+        partes.append(f"u={usuario}")
     if extra:
         partes.append(extra)
     return "&".join(partes)
@@ -655,10 +692,10 @@ html, body {{ margin:0; padding:0; background:transparent; font-family:Arial, He
                     if not usuario_logado_eh_gestao() and st.session_state.hub_permitido in HUBS:
                         st.session_state.hub = st.session_state.hub_permitido
                         st.session_state.tela = "hub"
-                        st.query_params.clear(); st.query_params["auth"] = token; st.query_params["tela"] = "hub"; st.query_params["hub"] = st.session_state.hub_permitido
+                        st.query_params.clear(); st.query_params["auth"] = token; st.query_params["u"] = st.session_state.usuario_login; st.query_params["tela"] = "hub"; st.query_params["hub"] = st.session_state.hub_permitido
                     else:
                         st.session_state.tela = "home"
-                        st.query_params.clear(); st.query_params["auth"] = token; st.query_params["tela"] = "home"
+                        st.query_params.clear(); st.query_params["auth"] = token; st.query_params["u"] = st.session_state.usuario_login; st.query_params["tela"] = "home"
                     st.rerun()
         else:
             with st.form("form_cadastro_panel"):
@@ -1940,6 +1977,7 @@ def render_header(titulo="Dashboard de Hubs", subtitulo="Acompanhe a performance
 def voltar_home_botao():
     st.session_state.tela = "home"
     st.query_params["auth"] = st.session_state.get("auth_token", "")
+    st.query_params["u"] = st.session_state.get("usuario_login", "")
     st.query_params["tela"] = "home"
     st.query_params["theme"] = "dark" if st.session_state.get("tema_escuro", False) else "light"
     if "hub" in st.query_params:
@@ -2196,6 +2234,7 @@ def render_configuracao_hub(hub):
                 st.session_state.tela = "hub"; st.session_state.hub = hub
                 token_atual = st.session_state.get("auth_token") or st.query_params.get("auth", "")
                 if token_atual: st.query_params["auth"] = token_atual
+                st.query_params["u"] = st.session_state.get("usuario_login", "")
                 st.query_params["tela"] = "hub"; st.query_params["hub"] = hub; st.query_params["theme"] = "dark" if st.session_state.get("tema_escuro", False) else "light"
                 time.sleep(1); st.rerun()
         except Exception as e:
