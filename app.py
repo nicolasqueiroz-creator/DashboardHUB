@@ -76,7 +76,8 @@ def get_supabase():
 
 
 def config_default():
-    return {"bash_list": "", "bash_v2": "", "ats": "", "db_link": ""}
+    # Mantém "ats" como legado para não perder configurações antigas já salvas.
+    return {"bash_list": "", "bash_v2": "", "ats": "", "ats_am": "", "ats_pm": "", "db_link": ""}
 
 
 def montar_dados_hub_para_salvar(hub):
@@ -95,10 +96,13 @@ def aplicar_dados_hub_carregados(hub, dados):
     config = dados.get("__config", {})
     if isinstance(config, dict):
         atual = st.session_state.config_por_hub.get(hub, config_default())
+        ats_legado = config.get("ats", atual.get("ats", ""))
         atual.update({
             "bash_list": config.get("bash_list", atual.get("bash_list", "")),
             "bash_v2": config.get("bash_v2", atual.get("bash_v2", "")),
-            "ats": config.get("ats", atual.get("ats", "")),
+            "ats": ats_legado,
+            "ats_am": config.get("ats_am", atual.get("ats_am", ats_legado)),
+            "ats_pm": config.get("ats_pm", atual.get("ats_pm", "")),
             "db_link": config.get("db_link", atual.get("db_link", "")),
         })
         st.session_state.config_por_hub[hub] = atual
@@ -181,9 +185,12 @@ def sincronizar_widgets_config_hub(hub):
     """Atualiza os campos da aba Configuração com o que acabou de vir do Supabase."""
     try:
         config = st.session_state.config_por_hub.get(hub, config_default())
+        ats_legado = config.get("ats", "")
         st.session_state[f"bash_list_{hub}"] = config.get("bash_list", "")
         st.session_state[f"bash_v2_{hub}"] = config.get("bash_v2", "")
-        st.session_state[f"ats_{hub}"] = config.get("ats", "")
+        st.session_state[f"ats_{hub}"] = ats_legado
+        st.session_state[f"ats_am_{hub}"] = config.get("ats_am", ats_legado)
+        st.session_state[f"ats_pm_{hub}"] = config.get("ats_pm", "")
         st.session_state[f"database_{hub}"] = config.get("db_link", st.session_state.db_links_por_hub.get(hub, ""))
     except Exception as e:
         safe_log(f"Erro ao sincronizar campos do hub {hub}: {e}")
@@ -1032,7 +1039,12 @@ def salvar_estado_persistido(hub_para_salvar=None):
             pass
 
 def hub_default():
-    return {"Volume": 0, "Entregues": 0, "Pendentes": 0, "Pacotes em Rota de Entrega": 0, "Onhold": 0, "Total de Rotas": 0, "Não Coletadas": 0, "Última Atualização": "Sem atualização"}
+    return {
+        "Volume": 0, "Entregues": 0, "Pendentes": 0, "Pacotes em Rota de Entrega": 0,
+        "Onhold": 0, "Total de Rotas": 0, "Não Coletadas": 0, "Última Atualização": "Sem atualização",
+        "Volume AM": 0, "Entregues AM": 0, "Pendentes AM": 0, "Onhold AM": 0, "Rotas AM": 0, "Performance AM": 0,
+        "Volume PM": 0, "Entregues PM": 0, "Pendentes PM": 0, "Onhold PM": 0, "Rotas PM": 0, "Performance PM": 0,
+    }
 
 
 if "hub" not in st.session_state:
@@ -1732,8 +1744,9 @@ def buscar_metricas_em_lote(curl_auth, mapa_v2, max_workers=20):
     return resultados
 
 
-def processar_rotas_v2(lista_v2, ats_desejadas=None):
+def processar_rotas_v2(lista_v2, ats_desejadas=None, mapa_janelas=None):
     ats_set = set(ats_desejadas or [])
+    mapa_janelas = mapa_janelas or {}
     mapa = {}
     for rota in lista_v2:
         at = str(rota.get("assignment_task_id", "")).upper().strip()
@@ -1757,7 +1770,7 @@ def processar_rotas_v2(lista_v2, ats_desejadas=None):
         rota_concluida_v2 = status_v2 == 5 and complete_time_v2 > 0
 
         mapa[at] = {
-            "AT": at, "Driver ID": rota.get("driver_id", ""), "Motorista": rota.get("driver_name", ""),
+            "AT": at, "Janela": mapa_janelas.get(at, "-"), "Driver ID": rota.get("driver_id", ""), "Motorista": rota.get("driver_name", ""),
             "Modal": rota.get("vehicle_type", ""), "Gaiola": rota.get("corridor_cage", ""), "Bairro": rota.get("neighborhood", ""),
             "Cluster": rota.get("cluster", ""), "Cidade": rota.get("city", ""), "Hora Bipada": obter_hora_bipada(rota),
             "Hora Atribuição": epoch_para_data(rota.get("driver_assigned_time", 0)), "Distância KM": rota.get("total_distance", ""),
@@ -1782,6 +1795,23 @@ def criar_rotas_apenas_v2(mapa_v2):
     return rotas
 
 
+def calcular_metricas_janela(rotas, janela):
+    rotas_janela = [r for r in rotas if str(r.get("Janela", "")).upper() == str(janela).upper()]
+    total = sum(int(r.get("Total") or 0) for r in rotas_janela)
+    entregues = sum(int(r.get("Entregues") or 0) for r in rotas_janela)
+    pendentes = sum(int(r.get("Pendentes") or 0) for r in rotas_janela)
+    onhold = sum(int(r.get("On Hold") or 0) for r in rotas_janela)
+    performance = entregues / total if total else 0
+    return {
+        "Volume": total,
+        "Entregues": entregues,
+        "Pendentes": pendentes,
+        "Onhold": onhold,
+        "Rotas": len(rotas_janela),
+        "Performance": performance,
+    }
+
+
 def atualizar_hub_com_rotas(hub_atual, rotas):
     total = sum(int(r.get("Total") or 0) for r in rotas)
     entregues = sum(int(r.get("Entregues") or 0) for r in rotas)
@@ -1796,6 +1826,22 @@ def atualizar_hub_com_rotas(hub_atual, rotas):
     st.session_state.hubs[hub_atual]["Entregues"] = entregues
     st.session_state.hubs[hub_atual]["Onhold"] = onhold
     st.session_state.hubs[hub_atual]["Não Coletadas"] = nao_coletadas
+
+    metricas_am = calcular_metricas_janela(rotas, "AM")
+    metricas_pm = calcular_metricas_janela(rotas, "PM")
+    st.session_state.hubs[hub_atual]["Volume AM"] = metricas_am["Volume"]
+    st.session_state.hubs[hub_atual]["Entregues AM"] = metricas_am["Entregues"]
+    st.session_state.hubs[hub_atual]["Pendentes AM"] = metricas_am["Pendentes"]
+    st.session_state.hubs[hub_atual]["Onhold AM"] = metricas_am["Onhold"]
+    st.session_state.hubs[hub_atual]["Rotas AM"] = metricas_am["Rotas"]
+    st.session_state.hubs[hub_atual]["Performance AM"] = metricas_am["Performance"]
+    st.session_state.hubs[hub_atual]["Volume PM"] = metricas_pm["Volume"]
+    st.session_state.hubs[hub_atual]["Entregues PM"] = metricas_pm["Entregues"]
+    st.session_state.hubs[hub_atual]["Pendentes PM"] = metricas_pm["Pendentes"]
+    st.session_state.hubs[hub_atual]["Onhold PM"] = metricas_pm["Onhold"]
+    st.session_state.hubs[hub_atual]["Rotas PM"] = metricas_pm["Rotas"]
+    st.session_state.hubs[hub_atual]["Performance PM"] = metricas_pm["Performance"]
+
     st.session_state.hubs[hub_atual]["Última Atualização"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
 
 
@@ -1807,6 +1853,8 @@ def ordenar_rotas(rotas, campo_ordenacao, ordem_desc):
         rotas_exibicao.sort(key=lambda x: str(x.get("Hora Bipada", "")), reverse=ordem_desc)
     elif campo_ordenacao == "Motorista":
         rotas_exibicao.sort(key=lambda x: str(x.get("Motorista", "")), reverse=ordem_desc)
+    elif campo_ordenacao == "Janela":
+        rotas_exibicao.sort(key=lambda x: str(x.get("Janela", "")), reverse=ordem_desc)
     elif campo_ordenacao == "AT":
         rotas_exibicao.sort(key=lambda x: str(x.get("AT", "")), reverse=ordem_desc)
     elif campo_ordenacao == "Total":
@@ -2060,6 +2108,7 @@ def detalhes_at(rota):
     st.markdown(f"### {rota['AT']}")
     st.write(f"**Driver ID:** {rota['Driver ID']}")
     st.write(f"**Nome do motorista:** {rota['Motorista']}")
+    st.write(f"**Janela:** {rota.get('Janela', '-')}")
     st.write(f"**Telefone:** {rota.get('Telefone', '') or 'Sem contato'}")
     st.write(f"**Modal:** {rota['Modal']}")
     st.write(f"**Gaiola:** {rota['Gaiola']}")
@@ -2289,12 +2338,40 @@ def render_dashboard_hub(hub):
     with p3:
         html(f'<div class="progress-card"><div class="progress-title">Falta para concluir 100%</div><div class="progress-bg"><div class="fill blue-bar" style="width:{falta*100:.1f}%;"></div></div><div class="progress-info"><span>Faltam {pendentes:,}</span><b style="color:#0066ff;">{falta*100:.1f}%</b></div></div>'.replace(",", "."))
 
+    def render_card_janela(nome_janela, icone, cor_barra):
+        volume_j = int(dados.get(f"Volume {nome_janela}", 0) or 0)
+        entregues_j = int(dados.get(f"Entregues {nome_janela}", 0) or 0)
+        pendentes_j = int(dados.get(f"Pendentes {nome_janela}", 0) or 0)
+        onhold_j = int(dados.get(f"Onhold {nome_janela}", 0) or 0)
+        rotas_j = int(dados.get(f"Rotas {nome_janela}", 0) or 0)
+        perf_j = entregues_j / volume_j if volume_j else 0
+        html(f'''
+        <div class="progress-card">
+            <div class="progress-title">{icone} Janela {nome_janela}</div>
+            <div class="progress-bg"><div class="fill {cor_barra}" style="width:{perf_j*100:.1f}%;"></div></div>
+            <div class="progress-info"><span>Performance</span><b>{perf_j*100:.1f}%</b></div>
+            <div class="progress-info"><span>Volume</span><b>{volume_j:,}</b></div>
+            <div class="progress-info"><span>Entregues</span><b>{entregues_j:,}</b></div>
+            <div class="progress-info"><span>Pendentes</span><b>{pendentes_j:,}</b></div>
+            <div class="progress-info"><span>On Hold</span><b>{onhold_j:,}</b></div>
+            <div class="progress-info"><span>Rotas</span><b>{rotas_j:,}</b></div>
+        </div>
+        '''.replace(",", "."))
+
+    html('<div class="section-title">Performance por Janela</div>')
+    janela_col1, janela_col2 = st.columns(2)
+    with janela_col1:
+        render_card_janela("AM", "🌅", "orange-bar")
+    with janela_col2:
+        render_card_janela("PM", "🌆", "blue-bar")
+
     if rotas_hub:
         linhas_csv = []
         for rota in rotas_hub:
             linhas_csv.append({
                 "Hub": hub,
                 "AT": rota.get("AT", ""),
+                "Janela": rota.get("Janela", "-"),
                 "Driver ID": rota.get("Driver ID", ""),
                 "Motorista": rota.get("Motorista", ""),
                 "Telefone": rota.get("Telefone", ""),
@@ -2332,20 +2409,21 @@ def render_dashboard_hub(hub):
         html('<div class="section-title">Lista de ATs do Hub</div>')
         col_ord1, col_ord2 = st.columns([2, 1])
         with col_ord1:
-            campo_ordenacao = st.selectbox("Ordenar por", ["Progresso", "Taxa esperada", "Hora Bipada", "Motorista", "AT", "Total", "Entregues", "Pendentes"], index=0, key=f"ordenar_{hub}")
+            campo_ordenacao = st.selectbox("Ordenar por", ["Progresso", "Taxa esperada", "Hora Bipada", "Motorista", "Janela", "AT", "Total", "Entregues", "Pendentes"], index=0, key=f"ordenar_{hub}")
         with col_ord2:
             ordem_desc = st.toggle("Decrescente", value=True, key=f"ordem_{hub}")
         rotas_exibicao = ordenar_rotas(rotas_hub, campo_ordenacao, ordem_desc)
-        COLUNAS_ATS = [2.0, 4.0, 2.6, 3.3, 3.1, 1.4, 1.6]
-        for col, titulo in zip(st.columns(COLUNAS_ATS), ["AT", "Motorista", "Hora bipada", "Progresso", "Taxa esperada", "Ação", "WhatsApp"]):
+        COLUNAS_ATS = [1.5, 1.0, 3.8, 2.4, 3.0, 2.8, 1.3, 1.5]
+        for col, titulo in zip(st.columns(COLUNAS_ATS), ["AT", "Janela", "Motorista", "Hora bipada", "Progresso", "Taxa esperada", "Ação", "WhatsApp"]):
             with col:
                 html(f'<div class="ats-header-cell center">{titulo}</div>')
         for i, rota in enumerate(rotas_exibicao):
-            c_at, c_motorista, c_hora, c_prog, c_esperada, c_btn, c_wpp = st.columns(COLUNAS_ATS)
+            c_at, c_janela, c_motorista, c_hora, c_prog, c_esperada, c_btn, c_wpp = st.columns(COLUNAS_ATS)
             progresso_percentual = calcular_percentual_progresso(rota)
             taxa_esperada = calcular_taxa_esperada_entrega(rota)
             progresso_texto = f'{int(rota.get("Entregues") or 0)}/{int(rota.get("Total") or 0)}'
             with c_at: html(f'<div class="ats-cell at-code">{rota["AT"]}</div>')
+            with c_janela: html(f'<div class="ats-cell center">{rota.get("Janela", "-")}</div>')
             with c_motorista: html(f'<div class="ats-cell">{rota["Motorista"] or "Sem motorista"}</div>')
             with c_hora: html(f'<div class="ats-cell">{rota["Hora Bipada"]}</div>')
             with c_prog: html(f'<div class="ats-cell">{render_barra_percentual(progresso_percentual, progresso_texto)}</div>')
@@ -2376,20 +2454,43 @@ def render_configuracao_hub(hub):
         st.session_state[f"bash_list_{hub}"] = config_hub.get("bash_list", "")
     if f"bash_v2_{hub}" not in st.session_state:
         st.session_state[f"bash_v2_{hub}"] = config_hub.get("bash_v2", "")
+    ats_legado = config_hub.get("ats", "")
     if f"ats_{hub}" not in st.session_state:
-        st.session_state[f"ats_{hub}"] = config_hub.get("ats", "")
+        st.session_state[f"ats_{hub}"] = ats_legado
+    if f"ats_am_{hub}" not in st.session_state:
+        st.session_state[f"ats_am_{hub}"] = config_hub.get("ats_am", ats_legado)
+    if f"ats_pm_{hub}" not in st.session_state:
+        st.session_state[f"ats_pm_{hub}"] = config_hub.get("ats_pm", "")
     if f"database_{hub}" not in st.session_state:
         st.session_state[f"database_{hub}"] = config_hub.get("db_link", st.session_state.db_links_por_hub.get(hub, ""))
 
     bash_list = st.text_area("Bash LIST / AUTH", height=180, key=f"bash_list_{hub}")
     bash_v2 = st.text_area("Bash V2", height=240, key=f"bash_v2_{hub}")
-    ats_texto = st.text_area("ATs para buscar", height=170, placeholder="Cole uma AT por linha ou separadas por vírgula.", key=f"ats_{hub}")
+
+    aba_ats_am, aba_ats_pm = st.tabs(["🌅 ATs AM", "🌆 ATs PM"])
+    with aba_ats_am:
+        ats_am_texto = st.text_area(
+            "ATs AM para buscar",
+            height=170,
+            placeholder="Cole as ATs do AM, uma por linha ou separadas por vírgula.",
+            key=f"ats_am_{hub}"
+        )
+    with aba_ats_pm:
+        ats_pm_texto = st.text_area(
+            "ATs PM para buscar",
+            height=170,
+            placeholder="Cole as ATs do PM, uma por linha ou separadas por vírgula.",
+            key=f"ats_pm_{hub}"
+        )
+
     link_database = st.text_input("Link da planilha Database do Hub", placeholder="Cole o link da aba Database. Coluna B = Nome | Coluna I = Telefone", key=f"database_{hub}")
 
     st.session_state.config_por_hub[hub] = {
         "bash_list": bash_list,
         "bash_v2": bash_v2,
-        "ats": ats_texto,
+        "ats": "\n".join([ats_am_texto, ats_pm_texto]).strip(),
+        "ats_am": ats_am_texto,
+        "ats_pm": ats_pm_texto,
         "db_link": link_database,
     }
     st.session_state.db_links_por_hub[hub] = link_database
@@ -2404,10 +2505,14 @@ def render_configuracao_hub(hub):
         somente_v2 = st.checkbox("Buscar todas as páginas do V2", value=True, key=f"somente_v2_{hub}")
 
     if st.button(f"💾 Salvar configurações do {hub}", use_container_width=True, key=f"salvar_config_{hub}", type="primary"):
+        ats_am_salvar = st.session_state.get(f"ats_am_{hub}", "")
+        ats_pm_salvar = st.session_state.get(f"ats_pm_{hub}", "")
         st.session_state.config_por_hub[hub] = {
             "bash_list": st.session_state.get(f"bash_list_{hub}", ""),
             "bash_v2": st.session_state.get(f"bash_v2_{hub}", ""),
-            "ats": st.session_state.get(f"ats_{hub}", ""),
+            "ats": "\n".join([ats_am_salvar, ats_pm_salvar]).strip(),
+            "ats_am": ats_am_salvar,
+            "ats_pm": ats_pm_salvar,
             "db_link": st.session_state.get(f"database_{hub}", ""),
         }
         st.session_state.db_links_por_hub[hub] = st.session_state.config_por_hub[hub]["db_link"]
@@ -2435,15 +2540,21 @@ def render_configuracao_hub(hub):
         st.session_state.config_por_hub[hub] = {
             "bash_list": bash_list,
             "bash_v2": bash_v2,
-            "ats": ats_texto,
+            "ats": "\n".join([ats_am_texto, ats_pm_texto]).strip(),
+            "ats_am": ats_am_texto,
+            "ats_pm": ats_pm_texto,
             "db_link": link_database,
         }
         st.session_state.db_links_por_hub[hub] = link_database
         st.session_state.terminal = []
-        ats = limpar_ats(ats_texto)
+        ats_am = limpar_ats(ats_am_texto)
+        ats_pm = limpar_ats(ats_pm_texto)
+        ats = list(dict.fromkeys(ats_am + ats_pm))
+        mapa_janelas = {at: "AM" for at in ats_am}
+        mapa_janelas.update({at: "PM" for at in ats_pm})
         try:
             log(f"Iniciando processo do hub {hub}...")
-            log(f"ATs digitadas: {len(ats)}")
+            log(f"ATs digitadas: {len(ats)} | AM: {len(ats_am)} | PM: {len(ats_pm)}")
             contatos_database = st.session_state.contatos_por_hub.get(hub, {}) or {}
             if arquivo_database is not None or link_database.strip():
                 try:
@@ -2468,7 +2579,7 @@ def render_configuracao_hub(hub):
             log("Consultando V2...")
             lista_v2 = buscar_todas_paginas_v2(bash_v2) if somente_v2 else (carregar_json_ou_curl(bash_v2).get("data", {}).get("list", []))
             log(f"Rotas recebidas do V2: {len(lista_v2)}")
-            mapa_v2 = processar_rotas_v2(lista_v2, ats)
+            mapa_v2 = processar_rotas_v2(lista_v2, ats, mapa_janelas=mapa_janelas)
             log(f"ATs encontradas no V2: {len(mapa_v2)}")
             if not mapa_v2:
                 st.warning("Nenhuma AT encontrada no V2.")
@@ -2576,7 +2687,28 @@ def dialog_calcular_meta():
 
 
 def render_consolidado():
-    render_header(titulo="Consolidado", subtitulo="Calcule a meta operacional por janela AM, PM e consolidado.")
+    render_header(titulo="Consolidado", subtitulo="Visão consolidada dos hubs e cálculo de meta por janela AM/PM.")
+
+    linhas_consolidado = []
+    for hub_nome in hubs_visiveis_usuario():
+        dados_hub = st.session_state.hubs.get(hub_nome, hub_default())
+        volume = int(dados_hub.get("Volume", 0) or 0)
+        entregues = int(dados_hub.get("Entregues", 0) or 0)
+        linhas_consolidado.append({
+            "Hub": hub_nome,
+            "Volume": volume,
+            "AM": int(dados_hub.get("Volume AM", 0) or 0),
+            "PM": int(dados_hub.get("Volume PM", 0) or 0),
+            "Entregues": entregues,
+            "DS": f"{(entregues / volume * 100) if volume else 0:.1f}%",
+            "Rotas": int(dados_hub.get("Total de Rotas", 0) or 0),
+            "Atualizado": dados_hub.get("Última Atualização", "Sem atualização"),
+        })
+    if linhas_consolidado and pd is not None:
+        st.dataframe(pd.DataFrame(linhas_consolidado), use_container_width=True, hide_index=True)
+    elif linhas_consolidado:
+        st.table(linhas_consolidado)
+
     if st.button("🎯 Calcular Meta", type="primary"):
         dialog_calcular_meta()
     resultado = st.session_state.get("consolidado_resultado")
