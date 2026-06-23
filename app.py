@@ -1741,12 +1741,31 @@ def processar_rotas_v2(lista_v2, ats_desejadas=None):
             continue
         if ats_set and at not in ats_set:
             continue
+        try:
+            total_v2 = int(rota.get("order_count") or rota.get("assigned_order_count") or 0)
+        except Exception:
+            total_v2 = 0
+        try:
+            status_v2 = int(rota.get("status") or 0)
+        except Exception:
+            status_v2 = 0
+        try:
+            complete_time_v2 = int(rota.get("complete_time") or 0)
+        except Exception:
+            complete_time_v2 = 0
+
+        rota_concluida_v2 = status_v2 == 5 and complete_time_v2 > 0
+
         mapa[at] = {
             "AT": at, "Driver ID": rota.get("driver_id", ""), "Motorista": rota.get("driver_name", ""),
             "Modal": rota.get("vehicle_type", ""), "Gaiola": rota.get("corridor_cage", ""), "Bairro": rota.get("neighborhood", ""),
             "Cluster": rota.get("cluster", ""), "Cidade": rota.get("city", ""), "Hora Bipada": obter_hora_bipada(rota),
             "Hora Atribuição": epoch_para_data(rota.get("driver_assigned_time", 0)), "Distância KM": rota.get("total_distance", ""),
             "Paradas": rota.get("stops_number", ""), "Station": rota.get("station_name", ""), "Telefone": "",
+            "Total V2": total_v2,
+            "Status V2": status_v2,
+            "Complete Time V2": complete_time_v2,
+            "Rota Concluida V2": rota_concluida_v2,
             "Total": 0, "Entregues": 0, "On Hold": 0, "Pendentes": 0, "Performance": 0, "Performance %": "0.0%",
         }
     return mapa
@@ -2458,12 +2477,33 @@ def render_configuracao_hub(hub):
                 metricas_lote = buscar_metricas_em_lote(bash_list, mapa_v2, max_workers=6)
                 for at, metricas in metricas_lote.items():
                     rota = mapa_v2[at]
-                    rota["Total"] = metricas["Total"]
-                    rota["Entregues"] = metricas["Entregues"]
-                    rota["On Hold"] = metricas["On Hold"]
-                    rota["Pendentes"] = metricas["Pendentes"]
-                    rota["Performance"] = metricas["Performance"]
-                    rota["Performance %"] = metricas["Performance %"]
+
+                    # Regra operacional SPX:
+                    # Se o V2 informa a rota como concluída (status 5 + complete_time),
+                    # a rota deve ser considerada 100% finalizada no Dashboard.
+                    # Isso corrige casos em que o detalhe dos pacotes ainda retorna
+                    # SP_Ready_Collection/SP_Collection_Collected como pendente,
+                    # mesmo com a AT já completa no sistema.
+                    if bool(rota.get("Rota Concluida V2", False)):
+                        try:
+                            total_v2 = int(rota.get("Total V2") or 0)
+                        except Exception:
+                            total_v2 = 0
+                        total_final = total_v2 if total_v2 > 0 else int(metricas.get("Total") or 0)
+
+                        rota["Total"] = total_final
+                        rota["Entregues"] = total_final
+                        rota["On Hold"] = 0
+                        rota["Pendentes"] = 0
+                        rota["Performance"] = 1 if total_final else 0
+                        rota["Performance %"] = "100.0%" if total_final else "0.0%"
+                    else:
+                        rota["Total"] = metricas["Total"]
+                        rota["Entregues"] = metricas["Entregues"]
+                        rota["On Hold"] = metricas["On Hold"]
+                        rota["Pendentes"] = metricas["Pendentes"]
+                        rota["Performance"] = metricas["Performance"]
+                        rota["Performance %"] = metricas["Performance %"]
                 log(f"Pacotes consultados para {len(metricas_lote)} ATs.")
                 rotas = criar_rotas_apenas_v2(mapa_v2)
                 rotas = aplicar_contatos_nas_rotas(rotas, contatos_database)
