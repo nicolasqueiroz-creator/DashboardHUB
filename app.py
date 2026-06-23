@@ -1635,10 +1635,36 @@ def status_pacote_eh_entregue(status_valores):
 
 
 def status_pacote_eh_onhold(status_valores):
+    """
+    Identifica On Hold apenas no nível de pacote.
+
+    Observação importante:
+    - No V2 da rota, status=5 significa rota concluída.
+    - No detalhe de pacotes (/detail/order/search), status=5 representa ocorrência/On Hold.
+
+    Esta função é usada somente dentro da leitura pacote a pacote, por isso o
+    código numérico 5 deve contar como On Hold aqui. A regra de rota concluída
+    continua separada por `Rota Concluida V2` e força 100% quando aplicável.
+    """
     status_valores = status_valores if isinstance(status_valores, list) else [status_valores]
-    textos_onhold = {"on_hold", "onhold", "hold"}
+    textos_onhold = {
+        "on_hold",
+        "onhold",
+        "hold",
+        "held",
+        "occurrence",
+        "ocorrencia",
+        "sp_on_hold",
+        "sp_onhold",
+    }
 
     for valor in status_valores:
+        try:
+            if int(valor) == 5:
+                return True
+        except Exception:
+            pass
+
         texto = normalizar_status_pacote(valor)
         if texto in textos_onhold:
             return True
