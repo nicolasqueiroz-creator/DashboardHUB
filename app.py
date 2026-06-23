@@ -1547,15 +1547,122 @@ def extrair_lista_pacotes(resposta):
     return []
 
 
+def normalizar_status_pacote(valor):
+    """
+    Normaliza status de pacote.
+    Mantém número quando vier status numérico e mantém texto quando vier status textual.
+    Isso permite tratar SP_Ready_Collection como entregue.
+    """
+    if valor is None:
+        return None
+
+    if isinstance(valor, bool):
+        return int(valor)
+
+    if isinstance(valor, (int, float)):
+        try:
+            return int(valor)
+        except Exception:
+            return None
+
+    texto = str(valor or "").strip()
+    if not texto:
+        return None
+
+    try:
+        return int(texto)
+    except Exception:
+        return texto.strip()
+
+
+def status_texto_normalizado(status):
+    texto = str(status or "").strip().lower()
+    texto = texto.replace("-", "_").replace(" ", "_")
+    texto = re.sub(r"_+", "_", texto)
+    return texto
+
+
+def status_eh_entregue(status):
+    """
+    Status considerados finalizados/entregues para a performance operacional.
+    4 = Delivered.
+    SP_Ready_Collection = entregue/finalizado no ponto de coleta.
+    """
+    if status == 4:
+        return True
+
+    texto = status_texto_normalizado(status)
+    return texto in {
+        "delivered",
+        "delivery_success",
+        "completed",
+        "complete",
+        "signed",
+        "sp_ready_collection",
+        "sp_ready_for_collection",
+        "ready_collection",
+        "ready_for_collection",
+    }
+
+
+def status_eh_onhold(status):
+    if status == 5:
+        return True
+    texto = status_texto_normalizado(status)
+    return texto in {"on_hold", "onhold", "hold"}
+
+
+def status_eh_pendente(status):
+    if status == 2:
+        return True
+    texto = status_texto_normalizado(status)
+    return texto in {
+        "pending",
+        "delivering",
+        "in_delivery",
+        "out_for_delivery",
+        "assigned",
+        "in_transit",
+    }
+
+
 def extrair_status_pacote(pacote):
     if not isinstance(pacote, dict):
         return None
-    for chave in ["status", "tracking_status", "order_status", "shipment_status", "parcel_status", "delivery_status"]:
+
+    chaves_status = [
+        "status",
+        "status_name",
+        "status_desc",
+        "status_text",
+        "tracking_status",
+        "tracking_status_name",
+        "order_status",
+        "order_status_name",
+        "shipment_status",
+        "shipment_status_name",
+        "parcel_status",
+        "parcel_status_name",
+        "delivery_status",
+        "delivery_status_name",
+        "logistics_status",
+        "logistics_status_name",
+    ]
+
+    for chave in chaves_status:
         if chave in pacote:
-            try:
-                return int(pacote.get(chave))
-            except Exception:
-                return None
+            status = normalizar_status_pacote(pacote.get(chave))
+            if status is not None:
+                return status
+
+    # fallback para estruturas aninhadas comuns
+    for chave_pai in ["tracking", "order", "shipment", "parcel", "delivery", "logistics"]:
+        filho = pacote.get(chave_pai)
+        if isinstance(filho, dict):
+            status = extrair_status_pacote(filho)
+            if status is not None:
+                return status
+
     return None
 
 
@@ -1587,11 +1694,11 @@ def buscar_metricas_pacotes_por_at(curl_auth, at):
         for pacote in pacotes:
             status = extrair_status_pacote(pacote)
             total += 1
-            if status == 4:
+            if status_eh_entregue(status):
                 entregues += 1
-            elif status == 5:
+            elif status_eh_onhold(status):
                 onhold += 1
-            elif status == 2:
+            elif status_eh_pendente(status):
                 pendentes_status += 1
         if len(pacotes) < count:
             break
