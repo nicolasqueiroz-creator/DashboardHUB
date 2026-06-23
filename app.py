@@ -1639,12 +1639,6 @@ def status_pacote_eh_onhold(status_valores):
     textos_onhold = {"on_hold", "onhold", "hold"}
 
     for valor in status_valores:
-        try:
-            if int(valor) == 5:
-                return True
-        except Exception:
-            pass
-
         texto = normalizar_status_pacote(valor)
         if texto in textos_onhold:
             return True
