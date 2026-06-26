@@ -1636,13 +1636,79 @@ def status_pacote_eh_entregue(status_valores):
 
 
 def status_pacote_eh_onhold(status_valores):
+    """
+    Identifica On Hold por texto explícito do status.
+
+    Importante: não usar mais `status == 5` sozinho aqui, porque em algumas
+    respostas da Shopee esse código aparece em pacotes que não são On Hold e
+    infla absurdamente o indicador.
+    """
     status_valores = status_valores if isinstance(status_valores, list) else [status_valores]
-    textos_onhold = {"on_hold", "onhold", "hold"}
+    textos_onhold = {
+        "on_hold", "onhold", "hold", "held",
+        "occurrence", "ocorrencia", "ocorrencia_aberta",
+        "sp_on_hold", "sp_onhold", "problem", "exception",
+    }
 
     for valor in status_valores:
         texto = normalizar_status_pacote(valor)
         if texto in textos_onhold:
             return True
+
+    return False
+
+
+def pacote_tem_ocorrencia(pacote):
+    """
+    Usa campos de ocorrência do detalhe do pacote para identificar On Hold.
+    Na tela da Shopee existe a coluna "Número de ocorrências"; dependendo da
+    resposta da API, esse valor pode vir com nomes diferentes.
+    """
+    if not isinstance(pacote, dict):
+        return False
+
+    chaves_ocorrencia = [
+        "occurrence_count", "occurrences_count", "occurrence_num", "occurrence_number",
+        "exception_count", "exceptions_count", "exception_num", "exception_number",
+        "on_hold_count", "onhold_count", "hold_count",
+        "abnormal_count", "abnormal_num", "issue_count", "problem_count",
+        "num_occurrences", "numero_ocorrencias", "numero_de_ocorrencias",
+        "occurrence", "occurrences", "exceptions", "abnormal_list", "problem_list",
+    ]
+
+    for chave in chaves_ocorrencia:
+        if chave not in pacote:
+            continue
+        valor = pacote.get(chave)
+        if valor in [None, "", "-", 0, "0"]:
+            continue
+        if isinstance(valor, (list, tuple, dict)):
+            return len(valor) > 0
+        try:
+            return int(valor) > 0
+        except Exception:
+            texto = normalizar_status_pacote(valor)
+            if texto and texto not in {"0", "none", "null", "false", "na", "n_a"}:
+                return True
+
+    # Fallback: qualquer campo que mencione ocorrência/exceção/on hold e tenha valor positivo.
+    for chave, valor in pacote.items():
+        chave_norm = normalizar_status_pacote(chave)
+        if not any(palavra in chave_norm for palavra in ["occurrence", "ocorrencia", "exception", "onhold", "on_hold", "hold"]):
+            continue
+        if valor in [None, "", "-", 0, "0"]:
+            continue
+        if isinstance(valor, (list, tuple, dict)):
+            if len(valor) > 0:
+                return True
+            continue
+        try:
+            if int(valor) > 0:
+                return True
+        except Exception:
+            texto = normalizar_status_pacote(valor)
+            if texto and texto not in {"0", "none", "null", "false", "na", "n_a"}:
+                return True
 
     return False
 
@@ -1695,15 +1761,16 @@ def buscar_metricas_pacotes_por_at(curl_auth, at):
             total += 1
             if status_pacote_eh_entregue(status):
                 entregues += 1
-            elif status_pacote_eh_onhold(status):
+            elif pacote_tem_ocorrencia(pacote) or status_pacote_eh_onhold(status):
                 onhold += 1
             elif status_pacote_eh_pendente(status):
                 pendentes_status += 1
         if len(pacotes) < count:
             break
-    pendentes = pendentes_status
-    if pendentes == 0 and total > 0:
-        pendentes = max(total - entregues - onhold, 0)
+
+    # Regra operacional: tudo que não foi entregue nem On Hold fica pendente.
+    # Isso evita que status não mapeados sumam do fechamento da rota.
+    pendentes = max(total - entregues - onhold, 0)
     performance = entregues / total if total else 0
     return {"Total": total, "Entregues": entregues, "On Hold": onhold, "Pendentes": pendentes, "Performance": performance, "Performance %": f"{performance * 100:.1f}%"}
 
