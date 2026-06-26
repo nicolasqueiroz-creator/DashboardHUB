@@ -61,6 +61,7 @@ SUPABASE_TABLE_ROTAS = "rotas_cache"
 SUPABASE_TABLE_USUARIOS = "usuarios"
 SUPABASE_TABLE_PENDENTES = "cadastros_pendentes"
 SUPABASE_TABLE_SESSOES = "sessoes"
+SUPABASE_TABLE_HISTORICO_DRIVER = "historico_driver"
 
 def safe_log(msg):
     try:
@@ -1635,79 +1636,13 @@ def status_pacote_eh_entregue(status_valores):
 
 
 def status_pacote_eh_onhold(status_valores):
-    """
-    Identifica On Hold por texto explícito do status.
-
-    Importante: não usar mais `status == 5` sozinho aqui, porque em algumas
-    respostas da Shopee esse código aparece em pacotes que não são On Hold e
-    infla absurdamente o indicador.
-    """
     status_valores = status_valores if isinstance(status_valores, list) else [status_valores]
-    textos_onhold = {
-        "on_hold", "onhold", "hold", "held",
-        "occurrence", "ocorrencia", "ocorrencia_aberta",
-        "sp_on_hold", "sp_onhold", "problem", "exception",
-    }
+    textos_onhold = {"on_hold", "onhold", "hold"}
 
     for valor in status_valores:
         texto = normalizar_status_pacote(valor)
         if texto in textos_onhold:
             return True
-
-    return False
-
-
-def pacote_tem_ocorrencia(pacote):
-    """
-    Usa campos de ocorrência do detalhe do pacote para identificar On Hold.
-    Na tela da Shopee existe a coluna "Número de ocorrências"; dependendo da
-    resposta da API, esse valor pode vir com nomes diferentes.
-    """
-    if not isinstance(pacote, dict):
-        return False
-
-    chaves_ocorrencia = [
-        "occurrence_count", "occurrences_count", "occurrence_num", "occurrence_number",
-        "exception_count", "exceptions_count", "exception_num", "exception_number",
-        "on_hold_count", "onhold_count", "hold_count",
-        "abnormal_count", "abnormal_num", "issue_count", "problem_count",
-        "num_occurrences", "numero_ocorrencias", "numero_de_ocorrencias",
-        "occurrence", "occurrences", "exceptions", "abnormal_list", "problem_list",
-    ]
-
-    for chave in chaves_ocorrencia:
-        if chave not in pacote:
-            continue
-        valor = pacote.get(chave)
-        if valor in [None, "", "-", 0, "0"]:
-            continue
-        if isinstance(valor, (list, tuple, dict)):
-            return len(valor) > 0
-        try:
-            return int(valor) > 0
-        except Exception:
-            texto = normalizar_status_pacote(valor)
-            if texto and texto not in {"0", "none", "null", "false", "na", "n_a"}:
-                return True
-
-    # Fallback: qualquer campo que mencione ocorrência/exceção/on hold e tenha valor positivo.
-    for chave, valor in pacote.items():
-        chave_norm = normalizar_status_pacote(chave)
-        if not any(palavra in chave_norm for palavra in ["occurrence", "ocorrencia", "exception", "onhold", "on_hold", "hold"]):
-            continue
-        if valor in [None, "", "-", 0, "0"]:
-            continue
-        if isinstance(valor, (list, tuple, dict)):
-            if len(valor) > 0:
-                return True
-            continue
-        try:
-            if int(valor) > 0:
-                return True
-        except Exception:
-            texto = normalizar_status_pacote(valor)
-            if texto and texto not in {"0", "none", "null", "false", "na", "n_a"}:
-                return True
 
     return False
 
@@ -1760,16 +1695,15 @@ def buscar_metricas_pacotes_por_at(curl_auth, at):
             total += 1
             if status_pacote_eh_entregue(status):
                 entregues += 1
-            elif pacote_tem_ocorrencia(pacote) or status_pacote_eh_onhold(status):
+            elif status_pacote_eh_onhold(status):
                 onhold += 1
             elif status_pacote_eh_pendente(status):
                 pendentes_status += 1
         if len(pacotes) < count:
             break
-
-    # Regra operacional: tudo que não foi entregue nem On Hold fica pendente.
-    # Isso evita que status não mapeados sumam do fechamento da rota.
-    pendentes = max(total - entregues - onhold, 0)
+    pendentes = pendentes_status
+    if pendentes == 0 and total > 0:
+        pendentes = max(total - entregues - onhold, 0)
     performance = entregues / total if total else 0
     return {"Total": total, "Entregues": entregues, "On Hold": onhold, "Pendentes": pendentes, "Performance": performance, "Performance %": f"{performance * 100:.1f}%"}
 
@@ -1904,6 +1838,307 @@ def atualizar_hub_com_rotas(hub_atual, rotas):
     st.session_state.hubs[hub_atual]["Performance PM"] = metricas_pm["Performance"]
 
     st.session_state.hubs[hub_atual]["Última Atualização"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+
+
+# =========================================================
+# HISTÓRICO / INTELIGÊNCIA OPERACIONAL
+# =========================================================
+
+def motorista_valido_para_historico(rota):
+    nome = str(rota.get("Motorista", "") or "").strip()
+    if not nome:
+        return False
+    nome_upper = nome.upper()
+    bloqueados = ["NÃO BIPADA", "NAO BIPADA", "SEM MOTORISTA", "SEM DRIVER", "SEM ATRIBUIÇÃO", "SEM ATRIBUICAO"]
+    return nome_upper not in bloqueados
+
+
+def performance_rota_percentual(rota):
+    try:
+        total = int(rota.get("Total") or 0)
+        entregues = int(rota.get("Entregues") or 0)
+        if total > 0:
+            return round((entregues / total) * 100, 2)
+    except Exception:
+        pass
+    try:
+        perf = rota.get("Performance %", rota.get("Performance", 0))
+        if isinstance(perf, str):
+            return round(float(perf.replace("%", "").replace(",", ".").strip()), 2)
+        perf_float = float(perf)
+        if perf_float <= 1:
+            perf_float *= 100
+        return round(perf_float, 2)
+    except Exception:
+        return 0.0
+
+
+def montar_linhas_historico_driver(hub, rotas, limite_ofensor=95.0):
+    hoje = agora_brasil().date()
+    iso = hoje.isocalendar()
+    linhas = []
+
+    for rota in rotas or []:
+        if not motorista_valido_para_historico(rota):
+            continue
+
+        at = str(rota.get("AT", "") or "").strip().upper()
+        if not at:
+            continue
+
+        total = int(rota.get("Total") or 0)
+        entregues = int(rota.get("Entregues") or 0)
+        on_hold = int(rota.get("On Hold") or 0)
+        pendentes = int(rota.get("Pendentes") or 0)
+        performance = performance_rota_percentual(rota)
+        hora_bipada = str(rota.get("Hora Bipada", "") or "").strip()
+        nao_coletada = hora_bipada.lower() in ["não bipada", "nao bipada", "falta bipar", ""]
+        ofensora = bool(total > 0 and performance < float(limite_ofensor or 95.0))
+
+        historico_id = f"{hoje.isoformat()}_{hub}_{at}"
+        linhas.append({
+            "historico_id": historico_id,
+            "data": hoje.isoformat(),
+            "semana": int(iso.week),
+            "mes": int(hoje.month),
+            "ano": int(hoje.year),
+            "hub": hub,
+            "janela": str(rota.get("Janela", "-") or "-"),
+            "driver_id": str(rota.get("Driver ID", "") or ""),
+            "motorista": str(rota.get("Motorista", "") or "").strip().title(),
+            "at": at,
+            "gaiola": str(rota.get("Gaiola", "") or ""),
+            "cluster": str(rota.get("Cluster", "") or ""),
+            "modalidade": str(rota.get("Modal", "") or ""),
+            "volume": total,
+            "entregues": entregues,
+            "on_hold": on_hold,
+            "pendentes": pendentes,
+            "performance": performance,
+            "ofensora": ofensora,
+            "nao_coletada": nao_coletada,
+            "atualizado_por": st.session_state.get("usuario_login", ""),
+            "atualizado_em": agora_brasil().isoformat(),
+        })
+
+    return linhas
+
+
+def salvar_historico_driver_supabase(hub, rotas, limite_ofensor=95.0):
+    """Salva snapshot diário por AT/motorista no Supabase sem apagar histórico anterior."""
+    try:
+        sb = get_supabase()
+        if not sb:
+            safe_log("Supabase não configurado. Histórico não salvo na nuvem.")
+            return False
+
+        linhas = montar_linhas_historico_driver(hub, rotas, limite_ofensor=limite_ofensor)
+        if not linhas:
+            safe_log("Histórico: nenhuma rota válida para salvar.")
+            return False
+
+        # Envia em lotes para evitar payload grande.
+        for i in range(0, len(linhas), 300):
+            lote = linhas[i:i+300]
+            sb.table(SUPABASE_TABLE_HISTORICO_DRIVER).upsert(lote, on_conflict="historico_id").execute()
+
+        safe_log(f"Histórico salvo: {len(linhas)} rotas do {hub}.")
+        return True
+    except Exception as e:
+        safe_log(f"Erro ao salvar histórico do {hub}: {e}")
+        return False
+
+
+def carregar_historico_driver_supabase(hub, dias=35):
+    try:
+        sb = get_supabase()
+        if not sb:
+            return []
+        data_min = (agora_brasil().date() - pd.Timedelta(days=int(dias))).isoformat() if pd is not None else None
+        query = sb.table(SUPABASE_TABLE_HISTORICO_DRIVER).select("*").eq("hub", hub)
+        if data_min:
+            query = query.gte("data", data_min)
+        resp = query.order("data", desc=True).execute()
+        return resp.data or []
+    except Exception as e:
+        safe_log(f"Erro ao carregar histórico do {hub}: {e}")
+        return []
+
+
+def preparar_df_historico(hub, dias):
+    if pd is None:
+        return None
+    dados = carregar_historico_driver_supabase(hub, dias=dias)
+    df = pd.DataFrame(dados)
+    if df.empty:
+        return df
+
+    for col in ["volume", "entregues", "on_hold", "pendentes", "semana", "mes", "ano"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+    if "performance" in df.columns:
+        df["performance"] = pd.to_numeric(df["performance"], errors="coerce").fillna(0.0)
+    if "data" in df.columns:
+        df["data"] = pd.to_datetime(df["data"], errors="coerce").dt.date
+    if "ofensora" in df.columns:
+        df["ofensora"] = df["ofensora"].fillna(False).astype(bool)
+    if "nao_coletada" in df.columns:
+        df["nao_coletada"] = df["nao_coletada"].fillna(False).astype(bool)
+    return df
+
+
+def render_inteligencia_operacional(hub):
+    html(f'<div class="section-title">📈 Inteligência Operacional - {hub}</div>')
+    st.caption("Histórico de reutilização semanal dos motoristas e reincidência de ofensores por dia, semana e mês.")
+
+    if pd is None:
+        st.error("Para usar este módulo, instale pandas no projeto.")
+        return
+
+    rotas_atuais = st.session_state.rotas_por_hub.get(hub, [])
+    col_f1, col_f2, col_f3 = st.columns([1, 1, 1.2])
+    with col_f1:
+        dias = st.selectbox("Período", [7, 14, 30, 60, 90], index=2, format_func=lambda x: f"Últimos {x} dias", key=f"hist_dias_{hub}")
+    with col_f2:
+        limite_ofensor = st.number_input("Limite para ofensor (%)", min_value=0.0, max_value=100.0, value=95.0, step=1.0, key=f"hist_limite_{hub}")
+    with col_f3:
+        if st.button("💾 Registrar snapshot atual no histórico", type="primary", key=f"salvar_hist_manual_{hub}", use_container_width=True):
+            if salvar_historico_driver_supabase(hub, rotas_atuais, limite_ofensor=limite_ofensor):
+                st.success("Snapshot salvo no histórico.")
+            else:
+                st.warning("Não foi possível salvar o snapshot. Verifique a tabela historico_driver no Supabase.")
+
+    df = preparar_df_historico(hub, dias)
+    if df is None or df.empty:
+        st.info("Ainda não há histórico salvo para este hub. Atualize o hub ou clique em Registrar snapshot atual no histórico.")
+        return
+
+    # Recalcula ofensor conforme o limite selecionado para visualização.
+    df["ofensora"] = df["performance"] < float(limite_ofensor)
+
+    total_rotas = len(df)
+    drivers_unicos = df["driver_id"].replace("", pd.NA).dropna().nunique() if "driver_id" in df.columns else df["motorista"].nunique()
+    total_ofensoras = int(df["ofensora"].sum())
+    perf_media = float(df["performance"].mean()) if total_rotas else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Rotas no histórico", f"{total_rotas:,}".replace(",", "."))
+    c2.metric("Motoristas únicos", f"{drivers_unicos:,}".replace(",", "."))
+    c3.metric("Vezes ofensor", f"{total_ofensoras:,}".replace(",", "."))
+    c4.metric("Performance média", f"{perf_media:.1f}%")
+
+    tab_reuso, tab_ofensores, tab_motorista, tab_base = st.tabs([
+        "🔁 Reutilização semanal",
+        "🔥 Ofensores",
+        "👤 Histórico por motorista",
+        "📄 Base completa"
+    ])
+
+    with tab_reuso:
+        html('<div class="section-title">🔁 Motoristas reutilizados na semana</div>')
+        df_reuso = df.copy()
+        if "driver_id" not in df_reuso.columns:
+            df_reuso["driver_id"] = ""
+        agrupado = (
+            df_reuso.groupby(["ano", "semana", "driver_id", "motorista"], dropna=False)
+            .agg(
+                rotas=("at", "nunique"),
+                dias_trabalhados=("data", "nunique"),
+                volume=("volume", "sum"),
+                entregues=("entregues", "sum"),
+                on_hold=("on_hold", "sum"),
+                ofensores=("ofensora", "sum"),
+                performance_media=("performance", "mean"),
+            )
+            .reset_index()
+        )
+        agrupado["performance_media"] = agrupado["performance_media"].round(1)
+        agrupado["% ofensores"] = ((agrupado["ofensores"] / agrupado["rotas"].replace(0, 1)) * 100).round(1)
+        agrupado = agrupado.sort_values(["ano", "semana", "rotas", "performance_media"], ascending=[False, False, False, False])
+        st.dataframe(agrupado.rename(columns={
+            "ano":"Ano", "semana":"Semana", "driver_id":"Driver ID", "motorista":"Motorista",
+            "rotas":"Rotas", "dias_trabalhados":"Dias", "volume":"Volume", "entregues":"Entregues",
+            "on_hold":"On Hold", "ofensores":"Vezes ofensor", "performance_media":"Performance média"
+        }), use_container_width=True, hide_index=True)
+        st.download_button(
+            "📥 Exportar reutilização semanal",
+            data=agrupado.to_csv(index=False, sep=";", encoding="utf-8-sig"),
+            file_name=f"{hub}_reutilizacao_semanal_{agora_brasil().strftime('%d-%m-%Y')}.csv",
+            mime="text/csv",
+            key=f"csv_reuso_{hub}",
+            type="primary"
+        )
+
+    with tab_ofensores:
+        html('<div class="section-title">🔥 Histórico de ofensores</div>')
+        df_of = df[df["ofensora"]].copy()
+        if df_of.empty:
+            st.success("Nenhuma rota ofensora no período selecionado.")
+        else:
+            t1, t2, t3 = st.tabs(["Dia", "Semana", "Mês"])
+            with t1:
+                por_dia = (
+                    df_of.groupby(["data", "driver_id", "motorista"], dropna=False)
+                    .agg(vezes_ofensor=("at", "nunique"), volume=("volume", "sum"), performance_media=("performance", "mean"))
+                    .reset_index()
+                    .sort_values(["data", "vezes_ofensor"], ascending=[False, False])
+                )
+                por_dia["performance_media"] = por_dia["performance_media"].round(1)
+                st.dataframe(por_dia.rename(columns={"data":"Data", "driver_id":"Driver ID", "motorista":"Motorista", "vezes_ofensor":"Vezes ofensor", "performance_media":"Performance média"}), use_container_width=True, hide_index=True)
+            with t2:
+                por_semana = (
+                    df_of.groupby(["ano", "semana", "driver_id", "motorista"], dropna=False)
+                    .agg(vezes_ofensor=("at", "nunique"), volume=("volume", "sum"), performance_media=("performance", "mean"))
+                    .reset_index()
+                    .sort_values(["ano", "semana", "vezes_ofensor"], ascending=[False, False, False])
+                )
+                por_semana["performance_media"] = por_semana["performance_media"].round(1)
+                st.dataframe(por_semana.rename(columns={"ano":"Ano", "semana":"Semana", "driver_id":"Driver ID", "motorista":"Motorista", "vezes_ofensor":"Vezes ofensor", "performance_media":"Performance média"}), use_container_width=True, hide_index=True)
+            with t3:
+                por_mes = (
+                    df_of.groupby(["ano", "mes", "driver_id", "motorista"], dropna=False)
+                    .agg(vezes_ofensor=("at", "nunique"), volume=("volume", "sum"), performance_media=("performance", "mean"))
+                    .reset_index()
+                    .sort_values(["ano", "mes", "vezes_ofensor"], ascending=[False, False, False])
+                )
+                por_mes["performance_media"] = por_mes["performance_media"].round(1)
+                st.dataframe(por_mes.rename(columns={"ano":"Ano", "mes":"Mês", "driver_id":"Driver ID", "motorista":"Motorista", "vezes_ofensor":"Vezes ofensor", "performance_media":"Performance média"}), use_container_width=True, hide_index=True)
+
+    with tab_motorista:
+        html('<div class="section-title">👤 Ficha do motorista</div>')
+        motoristas = sorted(df["motorista"].dropna().unique().tolist())
+        motorista_sel = st.selectbox("Selecione o motorista", motoristas, key=f"hist_motorista_{hub}")
+        detalhe = df[df["motorista"] == motorista_sel].sort_values("data", ascending=False)
+        if not detalhe.empty:
+            rotas = detalhe["at"].nunique()
+            volume = int(detalhe["volume"].sum())
+            media = float(detalhe["performance"].mean())
+            ofens = int(detalhe["ofensora"].sum())
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Rotas", rotas)
+            m2.metric("Volume", f"{volume:,}".replace(",", "."))
+            m3.metric("Performance média", f"{media:.1f}%")
+            m4.metric("Vezes ofensor", ofens)
+            cols = ["data", "janela", "at", "gaiola", "volume", "entregues", "on_hold", "pendentes", "performance", "ofensora"]
+            cols = [c for c in cols if c in detalhe.columns]
+            st.dataframe(detalhe[cols].rename(columns={
+                "data":"Data", "janela":"Janela", "at":"AT", "gaiola":"Gaiola", "volume":"Volume",
+                "entregues":"Entregues", "on_hold":"On Hold", "pendentes":"Pendentes", "performance":"Performance", "ofensora":"Ofensor"
+            }), use_container_width=True, hide_index=True)
+
+    with tab_base:
+        html('<div class="section-title">📄 Base histórica completa</div>')
+        cols = ["data", "hub", "janela", "driver_id", "motorista", "at", "gaiola", "cluster", "modalidade", "volume", "entregues", "on_hold", "pendentes", "performance", "ofensora", "nao_coletada"]
+        cols = [c for c in cols if c in df.columns]
+        st.dataframe(df[cols].sort_values(["data", "motorista"], ascending=[False, True]), use_container_width=True, hide_index=True)
+        st.download_button(
+            "📥 Exportar base histórica completa",
+            data=df[cols].to_csv(index=False, sep=";", encoding="utf-8-sig"),
+            file_name=f"{hub}_historico_driver_{agora_brasil().strftime('%d-%m-%Y')}.csv",
+            mime="text/csv",
+            key=f"csv_hist_base_{hub}",
+            type="primary"
+        )
 
 
 def ordenar_rotas(rotas, campo_ordenacao, ordem_desc):
@@ -2681,6 +2916,7 @@ def render_configuracao_hub(hub):
                 rotas = aplicar_contatos_nas_rotas(rotas, contatos_database)
                 st.session_state.rotas_por_hub[hub] = rotas
                 atualizar_hub_com_rotas(hub, rotas)
+                salvar_historico_driver_supabase(hub, rotas, limite_ofensor=95.0)
                 salvar_estado_persistido(hub)
                 st.success(f"Atualização do {hub} finalizada.")
                 st.session_state.tela = "hub"; st.session_state.hub = hub
@@ -2812,9 +3048,10 @@ else:
         subtitulo=f"Performance operacional em tempo real do hub {hub_atual}."
     )
 
-    aba_dashboard, aba_ranking, aba_config = st.tabs([
+    aba_dashboard, aba_ranking, aba_inteligencia, aba_config = st.tabs([
         f"📊 Dashboard {hub_atual}",
         f"🏆 Ranking {hub_atual}",
+        f"📈 Inteligência {hub_atual}",
         f"⚙️ Configuração {hub_atual}"
     ])
 
@@ -2823,6 +3060,9 @@ else:
 
     with aba_ranking:
         render_ranking_hub(hub_atual)
+
+    with aba_inteligencia:
+        render_inteligencia_operacional(hub_atual)
 
     with aba_config:
         render_configuracao_hub(hub_atual)
