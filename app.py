@@ -3115,21 +3115,37 @@ else:
         subtitulo=f"Performance operacional em tempo real do hub {hub_atual}."
     )
 
-    aba_dashboard, aba_ranking, aba_inteligencia, aba_config = st.tabs([
-        f"📊 Dashboard {hub_atual}",
-        f"🏆 Ranking {hub_atual}",
-        f"📈 Inteligência {hub_atual}",
-        f"⚙️ Configuração {hub_atual}"
-    ])
+    # Navegação corrigida:
+    # Antes era usado st.tabs(), que renderiza todas as abas ao mesmo tempo.
+    # Em reruns do Streamlit, principalmente ao pesquisar na Inteligência,
+    # isso podia fazer Dashboard, Ranking, Inteligência e Configuração aparecerem empilhados.
+    # Agora apenas a aba selecionada é executada/renderizada.
+    opcoes_abas_hub = {
+        f"📊 Dashboard {hub_atual}": "dashboard",
+        f"🏆 Ranking {hub_atual}": "ranking",
+        f"📈 Inteligência {hub_atual}": "inteligencia",
+        f"⚙️ Configuração {hub_atual}": "configuracao",
+    }
 
-    with aba_dashboard:
+    chave_aba_hub = f"aba_ativa_{hub_atual}"
+    if chave_aba_hub not in st.session_state or st.session_state[chave_aba_hub] not in opcoes_abas_hub:
+        st.session_state[chave_aba_hub] = f"📊 Dashboard {hub_atual}"
+
+    aba_escolhida = st.radio(
+        "Navegação do hub",
+        list(opcoes_abas_hub.keys()),
+        key=chave_aba_hub,
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+
+    aba_atual = opcoes_abas_hub.get(aba_escolhida, "dashboard")
+
+    if aba_atual == "dashboard":
         render_dashboard_hub(hub_atual)
-
-    with aba_ranking:
+    elif aba_atual == "ranking":
         render_ranking_hub(hub_atual)
-
-    with aba_inteligencia:
+    elif aba_atual == "inteligencia":
         render_inteligencia_operacional(hub_atual)
-
-    with aba_config:
+    elif aba_atual == "configuracao":
         render_configuracao_hub(hub_atual)
