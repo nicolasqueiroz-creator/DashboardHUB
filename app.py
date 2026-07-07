@@ -3086,6 +3086,51 @@ def render_consolidado():
 # =========================================================
 # ROTEAMENTO FINAL
 # =========================================================
+
+def render_hub_atual_isolado(hub_atual):
+    """
+    Renderiza apenas um módulo do hub por vez.
+
+    Motivo:
+    O st.tabs() do Streamlit executa o conteúdo de todas as abas em cada rerun.
+    Quando a Inteligência usa filtros/pesquisa, o rerun redesenhava Dashboard,
+    Ranking, Inteligência e Configuração ao mesmo tempo. Esta função troca as
+    abas por um seletor de módulo persistido em session_state, mantendo a tela
+    visualmente organizada e preservando as configurações digitadas/salvas.
+    """
+    chave_modulo = f"modulo_ativo_{hub_atual}"
+
+    modulos = {
+        f"📊 Dashboard {hub_atual}": "dashboard",
+        f"🏆 Ranking {hub_atual}": "ranking",
+        f"📈 Inteligência {hub_atual}": "inteligencia",
+        f"⚙️ Configuração {hub_atual}": "configuracao",
+    }
+
+    if chave_modulo not in st.session_state or st.session_state[chave_modulo] not in modulos:
+        st.session_state[chave_modulo] = f"📊 Dashboard {hub_atual}"
+
+    # Mantém o seletor horizontal, parecido com abas, mas só executa o módulo escolhido.
+    modulo_label = st.radio(
+        "Navegação do hub",
+        list(modulos.keys()),
+        key=chave_modulo,
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    modulo = modulos.get(modulo_label, "dashboard")
+
+    if modulo == "dashboard":
+        render_dashboard_hub(hub_atual)
+    elif modulo == "ranking":
+        render_ranking_hub(hub_atual)
+    elif modulo == "inteligencia":
+        render_inteligencia_operacional(hub_atual)
+    elif modulo == "configuracao":
+        render_configuracao_hub(hub_atual)
+
+
 if st.session_state.tela == "home":
     render_home()
 elif st.session_state.tela == "admin":
@@ -3105,7 +3150,8 @@ else:
         render_acesso_negado(hub_atual)
         st.stop()
 
-    # Recarrega do Supabase ao entrar/trocar de hub para buscar atualizações de outros analistas.
+    # Recarrega do Supabase apenas ao entrar/trocar de hub.
+    # Não recarrega em todo rerun para não sobrescrever campos da Configuração.
     if st.session_state.get("_ultimo_hub_recarregado") != hub_atual:
         carregar_hub_supabase(hub_atual, atualizar_widgets=True)
         st.session_state["_ultimo_hub_recarregado"] = hub_atual
@@ -3115,37 +3161,4 @@ else:
         subtitulo=f"Performance operacional em tempo real do hub {hub_atual}."
     )
 
-    # Navegação corrigida:
-    # Antes era usado st.tabs(), que renderiza todas as abas ao mesmo tempo.
-    # Em reruns do Streamlit, principalmente ao pesquisar na Inteligência,
-    # isso podia fazer Dashboard, Ranking, Inteligência e Configuração aparecerem empilhados.
-    # Agora apenas a aba selecionada é executada/renderizada.
-    opcoes_abas_hub = {
-        f"📊 Dashboard {hub_atual}": "dashboard",
-        f"🏆 Ranking {hub_atual}": "ranking",
-        f"📈 Inteligência {hub_atual}": "inteligencia",
-        f"⚙️ Configuração {hub_atual}": "configuracao",
-    }
-
-    chave_aba_hub = f"aba_ativa_{hub_atual}"
-    if chave_aba_hub not in st.session_state or st.session_state[chave_aba_hub] not in opcoes_abas_hub:
-        st.session_state[chave_aba_hub] = f"📊 Dashboard {hub_atual}"
-
-    aba_escolhida = st.radio(
-        "Navegação do hub",
-        list(opcoes_abas_hub.keys()),
-        key=chave_aba_hub,
-        horizontal=True,
-        label_visibility="collapsed"
-    )
-
-    aba_atual = opcoes_abas_hub.get(aba_escolhida, "dashboard")
-
-    if aba_atual == "dashboard":
-        render_dashboard_hub(hub_atual)
-    elif aba_atual == "ranking":
-        render_ranking_hub(hub_atual)
-    elif aba_atual == "inteligencia":
-        render_inteligencia_operacional(hub_atual)
-    elif aba_atual == "configuracao":
-        render_configuracao_hub(hub_atual)
+    render_hub_atual_isolado(hub_atual)
