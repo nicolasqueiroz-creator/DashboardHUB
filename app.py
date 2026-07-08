@@ -203,11 +203,16 @@ def sincronizar_widgets_config_hub(hub):
         # Chaves persistentes do formulário de configuração.
         # Essas chaves não dependem da aba estar renderizada e evitam que o Streamlit
         # limpe os valores ao trocar entre Dashboard, Ranking, Inteligência e Configuração.
-        st.session_state[f"cfg_bash_list_{hub}"] = config.get("bash_list", "")
-        st.session_state[f"cfg_bash_v2_{hub}"] = config.get("bash_v2", "")
-        st.session_state[f"cfg_ats_am_{hub}"] = config.get("ats_am", ats_legado)
-        st.session_state[f"cfg_ats_pm_{hub}"] = config.get("ats_pm", "")
-        st.session_state[f"cfg_database_{hub}"] = db_link
+        st.session_state[f"store_bash_list_{hub}"] = config.get("bash_list", "")
+        st.session_state[f"store_bash_v2_{hub}"] = config.get("bash_v2", "")
+        st.session_state[f"store_ats_am_{hub}"] = config.get("ats_am", ats_legado)
+        st.session_state[f"store_ats_pm_{hub}"] = config.get("ats_pm", "")
+        st.session_state[f"store_database_{hub}"] = db_link
+        st.session_state[f"cfg_bash_list_{hub}"] = st.session_state[f"store_bash_list_{hub}"]
+        st.session_state[f"cfg_bash_v2_{hub}"] = st.session_state[f"store_bash_v2_{hub}"]
+        st.session_state[f"cfg_ats_am_{hub}"] = st.session_state[f"store_ats_am_{hub}"]
+        st.session_state[f"cfg_ats_pm_{hub}"] = st.session_state[f"store_ats_pm_{hub}"]
+        st.session_state[f"cfg_database_{hub}"] = st.session_state[f"store_database_{hub}"]
     except Exception as e:
         safe_log(f"Erro ao sincronizar campos do hub {hub}: {e}")
 
@@ -3096,40 +3101,69 @@ def render_dashboard_hub(hub):
 
 
 
+def _cfg_store_key(campo, hub):
+    return f"store_{campo}_{hub}"
+
+
+def _cfg_widget_key(campo, hub):
+    return f"cfg_{campo}_{hub}"
+
+
+def _cfg_campos_hub():
+    return ["bash_list", "bash_v2", "ats_am", "ats_pm", "database"]
+
+
+def copiar_widget_config_para_store(hub, campo):
+    """Copia o valor do widget para uma chave permanente que não some ao trocar de aba."""
+    widget_key = _cfg_widget_key(campo, hub)
+    store_key = _cfg_store_key(campo, hub)
+    if widget_key in st.session_state:
+        st.session_state[store_key] = st.session_state.get(widget_key, "")
+    atualizar_config_hub_em_memoria(hub)
+
+
 def garantir_config_form_hub(hub):
-    """Garante que os campos da configuração tenham uma cópia persistente no session_state."""
+    """Garante que a configuração tenha chaves permanentes, independentes dos widgets da aba."""
     config = st.session_state.config_por_hub.get(hub, config_default())
     ats_legado = config.get("ats", "")
     valores = {
-        f"cfg_bash_list_{hub}": config.get("bash_list", ""),
-        f"cfg_bash_v2_{hub}": config.get("bash_v2", ""),
-        f"cfg_ats_am_{hub}": config.get("ats_am", ats_legado),
-        f"cfg_ats_pm_{hub}": config.get("ats_pm", ""),
-        f"cfg_database_{hub}": config.get("db_link", st.session_state.db_links_por_hub.get(hub, "")),
+        "bash_list": config.get("bash_list", ""),
+        "bash_v2": config.get("bash_v2", ""),
+        "ats_am": config.get("ats_am", ats_legado),
+        "ats_pm": config.get("ats_pm", ""),
+        "database": config.get("db_link", st.session_state.db_links_por_hub.get(hub, "")),
     }
-    for chave, valor in valores.items():
-        if chave not in st.session_state:
-            st.session_state[chave] = valor
+    for campo, valor in valores.items():
+        store_key = _cfg_store_key(campo, hub)
+        widget_key = _cfg_widget_key(campo, hub)
+        if store_key not in st.session_state:
+            st.session_state[store_key] = valor
+        if widget_key not in st.session_state:
+            st.session_state[widget_key] = st.session_state.get(store_key, valor)
 
 
 def atualizar_config_hub_em_memoria(hub):
-    """Copia os valores digitados no formulário para config_por_hub sem depender de salvar."""
-    prefixos = [
-        f"cfg_bash_list_{hub}", f"cfg_bash_v2_{hub}",
-        f"cfg_ats_am_{hub}", f"cfg_ats_pm_{hub}", f"cfg_database_{hub}"
-    ]
+    """Copia as chaves permanentes para config_por_hub sem depender da aba estar aberta."""
+    # Se o widget existir no rerun atual, atualiza primeiro a chave permanente.
+    for campo in _cfg_campos_hub():
+        widget_key = _cfg_widget_key(campo, hub)
+        store_key = _cfg_store_key(campo, hub)
+        if widget_key in st.session_state:
+            st.session_state[store_key] = st.session_state.get(widget_key, "")
+
+    prefixos = [_cfg_store_key(campo, hub) for campo in _cfg_campos_hub()]
     if not any(chave in st.session_state for chave in prefixos):
         return
 
-    ats_am = st.session_state.get(f"cfg_ats_am_{hub}", "")
-    ats_pm = st.session_state.get(f"cfg_ats_pm_{hub}", "")
+    ats_am = st.session_state.get(_cfg_store_key("ats_am", hub), "")
+    ats_pm = st.session_state.get(_cfg_store_key("ats_pm", hub), "")
     config = {
-        "bash_list": st.session_state.get(f"cfg_bash_list_{hub}", ""),
-        "bash_v2": st.session_state.get(f"cfg_bash_v2_{hub}", ""),
+        "bash_list": st.session_state.get(_cfg_store_key("bash_list", hub), ""),
+        "bash_v2": st.session_state.get(_cfg_store_key("bash_v2", hub), ""),
         "ats": "\n".join([ats_am, ats_pm]).strip(),
         "ats_am": ats_am,
         "ats_pm": ats_pm,
-        "db_link": st.session_state.get(f"cfg_database_{hub}", ""),
+        "db_link": st.session_state.get(_cfg_store_key("database", hub), ""),
     }
     st.session_state.config_por_hub[hub] = config
     st.session_state.db_links_por_hub[hub] = config["db_link"]
@@ -3139,6 +3173,7 @@ def persistir_configs_digitadas_em_memoria():
     """Preserva configurações digitadas antes de qualquer mudança de tela/aba."""
     for hub in HUBS:
         atualizar_config_hub_em_memoria(hub)
+
 
 def render_configuracao_hub(hub):
     html(f'<div class="config-title">⚙️ Configuração Operacional - {hub}</div><div class="config-subtitle">Cole o Bash LIST, o Bash V2 e as ATs específicas deste hub.</div>')
@@ -3151,8 +3186,20 @@ def render_configuracao_hub(hub):
 
     garantir_config_form_hub(hub)
 
-    bash_list = st.text_area("Bash LIST / AUTH", height=180, key=f"cfg_bash_list_{hub}")
-    bash_v2 = st.text_area("Bash V2", height=240, key=f"cfg_bash_v2_{hub}")
+    bash_list = st.text_area(
+        "Bash LIST / AUTH",
+        height=180,
+        key=f"cfg_bash_list_{hub}",
+        on_change=copiar_widget_config_para_store,
+        args=(hub, "bash_list"),
+    )
+    bash_v2 = st.text_area(
+        "Bash V2",
+        height=240,
+        key=f"cfg_bash_v2_{hub}",
+        on_change=copiar_widget_config_para_store,
+        args=(hub, "bash_v2"),
+    )
 
     aba_ats_am, aba_ats_pm = st.tabs(["🌅 ATs AM", "🌆 ATs PM"])
     with aba_ats_am:
@@ -3160,17 +3207,27 @@ def render_configuracao_hub(hub):
             "ATs AM para buscar",
             height=170,
             placeholder="Cole as ATs do AM, uma por linha ou separadas por vírgula.",
-            key=f"cfg_ats_am_{hub}"
+            key=f"cfg_ats_am_{hub}",
+            on_change=copiar_widget_config_para_store,
+            args=(hub, "ats_am"),
         )
     with aba_ats_pm:
         ats_pm_texto = st.text_area(
             "ATs PM para buscar",
             height=170,
             placeholder="Cole as ATs do PM, uma por linha ou separadas por vírgula.",
-            key=f"cfg_ats_pm_{hub}"
+            key=f"cfg_ats_pm_{hub}",
+            on_change=copiar_widget_config_para_store,
+            args=(hub, "ats_pm"),
         )
 
-    link_database = st.text_input("Link da planilha Database do Hub", placeholder="Cole o link da aba Database. Coluna B = Nome | Coluna I = Telefone", key=f"cfg_database_{hub}")
+    link_database = st.text_input(
+        "Link da planilha Database do Hub",
+        placeholder="Cole o link da aba Database. Coluna B = Nome | Coluna I = Telefone",
+        key=f"cfg_database_{hub}",
+        on_change=copiar_widget_config_para_store,
+        args=(hub, "database"),
+    )
 
     # Atualiza a cópia em memória em todo rerun. Assim, ao sair da aba Configuração,
     # os dados digitados continuam vivos e não somem na volta.
