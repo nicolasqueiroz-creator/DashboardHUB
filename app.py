@@ -3211,10 +3211,24 @@ def render_configuracao_hub(hub):
         time.sleep(0.5)
         st.rerun()
 
-    garantir_config_form_hub(hub)
+    config_hub = st.session_state.config_por_hub.get(hub, config_default())
 
-    bash_list = st.text_area("Bash LIST / AUTH", height=180, key=f"cfg_bash_list_{hub}", on_change=atualizar_config_hub_em_memoria, args=(hub,))
-    bash_v2 = st.text_area("Bash V2", height=240, key=f"cfg_bash_v2_{hub}", on_change=atualizar_config_hub_em_memoria, args=(hub,))
+    if f"bash_list_{hub}" not in st.session_state:
+        st.session_state[f"bash_list_{hub}"] = config_hub.get("bash_list", "")
+    if f"bash_v2_{hub}" not in st.session_state:
+        st.session_state[f"bash_v2_{hub}"] = config_hub.get("bash_v2", "")
+    ats_legado = config_hub.get("ats", "")
+    if f"ats_{hub}" not in st.session_state:
+        st.session_state[f"ats_{hub}"] = ats_legado
+    if f"ats_am_{hub}" not in st.session_state:
+        st.session_state[f"ats_am_{hub}"] = config_hub.get("ats_am", ats_legado)
+    if f"ats_pm_{hub}" not in st.session_state:
+        st.session_state[f"ats_pm_{hub}"] = config_hub.get("ats_pm", "")
+    if f"database_{hub}" not in st.session_state:
+        st.session_state[f"database_{hub}"] = config_hub.get("db_link", st.session_state.db_links_por_hub.get(hub, ""))
+
+    bash_list = st.text_area("Bash LIST / AUTH", height=180, key=f"bash_list_{hub}")
+    bash_v2 = st.text_area("Bash V2", height=240, key=f"bash_v2_{hub}")
 
     aba_ats_am, aba_ats_pm = st.tabs(["🌅 ATs AM", "🌆 ATs PM"])
     with aba_ats_am:
@@ -3222,25 +3236,27 @@ def render_configuracao_hub(hub):
             "ATs AM para buscar",
             height=170,
             placeholder="Cole as ATs do AM, uma por linha ou separadas por vírgula.",
-            key=f"cfg_ats_am_{hub}",
-            on_change=atualizar_config_hub_em_memoria,
-            args=(hub,)
+            key=f"ats_am_{hub}"
         )
     with aba_ats_pm:
         ats_pm_texto = st.text_area(
             "ATs PM para buscar",
             height=170,
             placeholder="Cole as ATs do PM, uma por linha ou separadas por vírgula.",
-            key=f"cfg_ats_pm_{hub}",
-            on_change=atualizar_config_hub_em_memoria,
-            args=(hub,)
+            key=f"ats_pm_{hub}"
         )
 
-    link_database = st.text_input("Link da planilha Database do Hub", placeholder="Cole o link da aba Database. Coluna B = Nome | Coluna I = Telefone", key=f"cfg_database_{hub}", on_change=atualizar_config_hub_em_memoria, args=(hub,))
+    link_database = st.text_input("Link da planilha Database do Hub", placeholder="Cole o link da aba Database. Coluna B = Nome | Coluna I = Telefone", key=f"database_{hub}")
 
-    # Atualiza a cópia em memória em todo rerun. Assim, ao sair da aba Configuração,
-    # os dados digitados continuam vivos e não somem na volta.
-    atualizar_config_hub_em_memoria(hub)
+    st.session_state.config_por_hub[hub] = {
+        "bash_list": bash_list,
+        "bash_v2": bash_v2,
+        "ats": "\n".join([ats_am_texto, ats_pm_texto]).strip(),
+        "ats_am": ats_am_texto,
+        "ats_pm": ats_pm_texto,
+        "db_link": link_database,
+    }
+    st.session_state.db_links_por_hub[hub] = link_database
 
     arquivo_database = st.file_uploader("Anexar arquivo Database do Hub (.xlsx, .xls ou .csv)", type=["xlsx", "xls", "csv"], key=f"database_file_{hub}")
     col_a, col_c, col_b = st.columns([1, 1, 2])
@@ -3252,8 +3268,18 @@ def render_configuracao_hub(hub):
         somente_v2 = st.checkbox("Buscar todas as páginas do V2", value=True, key=f"somente_v2_{hub}")
 
     if st.button(f"💾 Salvar configurações do {hub}", use_container_width=True, key=f"salvar_config_{hub}", type="primary"):
-        atualizar_config_hub_em_memoria(hub)
-        salvar_estado_persistido(hub)
+        ats_am_salvar = st.session_state.get(f"ats_am_{hub}", "")
+        ats_pm_salvar = st.session_state.get(f"ats_pm_{hub}", "")
+        st.session_state.config_por_hub[hub] = {
+            "bash_list": st.session_state.get(f"bash_list_{hub}", ""),
+            "bash_v2": st.session_state.get(f"bash_v2_{hub}", ""),
+            "ats": "\n".join([ats_am_salvar, ats_pm_salvar]).strip(),
+            "ats_am": ats_am_salvar,
+            "ats_pm": ats_pm_salvar,
+            "db_link": st.session_state.get(f"database_{hub}", ""),
+        }
+        st.session_state.db_links_por_hub[hub] = st.session_state.config_por_hub[hub]["db_link"]
+        salvar_estado_persistido()
         st.success(f"Configurações do {hub} salvas na nuvem.")
 
     if carregar_contatos_btn:
@@ -3494,30 +3520,24 @@ else:
         subtitulo=f"Performance operacional em tempo real do hub {hub_atual}."
     )
 
-    opcoes_abas_hub = [
+    # Mantém st.tabs aqui porque o Streamlit preserva os widgets da aba Configuração
+    # mesmo quando o usuário alterna para Dashboard, Ranking ou Inteligência.
+    # Isso evita que Bash LIST, Bash V2, ATs AM/PM e Database sumam ao trocar de aba.
+    aba_dashboard, aba_ranking, aba_inteligencia, aba_config = st.tabs([
         f"📊 Dashboard {hub_atual}",
         f"🏆 Ranking {hub_atual}",
         f"📈 Inteligência {hub_atual}",
         f"⚙️ Configuração {hub_atual}"
-    ]
-    chave_aba_hub = f"aba_ativa_hub_{hub_atual}"
-    if chave_aba_hub not in st.session_state or st.session_state[chave_aba_hub] not in opcoes_abas_hub:
-        st.session_state[chave_aba_hub] = opcoes_abas_hub[0]
+    ])
 
-    aba_ativa = st.radio(
-        "Navegação do hub",
-        opcoes_abas_hub,
-        key=chave_aba_hub,
-        horizontal=True,
-        label_visibility="collapsed",
-        on_change=persistir_configs_digitadas_em_memoria
-    )
-
-    if aba_ativa.startswith("📊"):
+    with aba_dashboard:
         render_dashboard_hub(hub_atual)
-    elif aba_ativa.startswith("🏆"):
+
+    with aba_ranking:
         render_ranking_hub(hub_atual)
-    elif aba_ativa.startswith("📈"):
+
+    with aba_inteligencia:
         render_inteligencia_operacional(hub_atual)
-    elif aba_ativa.startswith("⚙️"):
+
+    with aba_config:
         render_configuracao_hub(hub_atual)
