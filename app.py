@@ -2066,6 +2066,93 @@ def preparar_df_historico(hub, dias):
     return df
 
 
+
+
+def montar_indice_confiabilidade(df):
+    """Monta o índice de confiabilidade dos motoristas com base no histórico selecionado."""
+    if pd is None or df is None or df.empty:
+        return pd.DataFrame() if pd is not None else None
+
+    base = df.copy()
+    if "driver_id" not in base.columns:
+        base["driver_id"] = ""
+    if "motorista" not in base.columns:
+        base["motorista"] = ""
+
+    for col in ["volume", "entregues", "on_hold", "pendentes"]:
+        if col not in base.columns:
+            base[col] = 0
+    if "performance" not in base.columns:
+        base["performance"] = 0.0
+    if "ofensora" not in base.columns:
+        base["ofensora"] = False
+
+    agrupado = (
+        base.groupby(["driver_id", "motorista"], dropna=False)
+        .agg(
+            rotas=("at", "nunique"),
+            dias_trabalhados=("data", "nunique"),
+            ultima_data=("data", "max"),
+            volume=("volume", "sum"),
+            entregues=("entregues", "sum"),
+            on_hold=("on_hold", "sum"),
+            pendentes=("pendentes", "sum"),
+            ofensores=("ofensora", "sum"),
+            performance_media=("performance", "mean"),
+        )
+        .reset_index()
+    )
+
+    agrupado["performance_media"] = pd.to_numeric(agrupado["performance_media"], errors="coerce").fillna(0.0)
+    agrupado["rotas"] = pd.to_numeric(agrupado["rotas"], errors="coerce").fillna(0).astype(int)
+    agrupado["ofensores"] = pd.to_numeric(agrupado["ofensores"], errors="coerce").fillna(0).astype(int)
+    agrupado["volume"] = pd.to_numeric(agrupado["volume"], errors="coerce").fillna(0).astype(int)
+    agrupado["pendentes"] = pd.to_numeric(agrupado["pendentes"], errors="coerce").fillna(0).astype(int)
+    agrupado["on_hold"] = pd.to_numeric(agrupado["on_hold"], errors="coerce").fillna(0).astype(int)
+
+    agrupado["% ofensores"] = ((agrupado["ofensores"] / agrupado["rotas"].replace(0, 1)) * 100).round(1)
+    agrupado["% pendentes"] = ((agrupado["pendentes"] / agrupado["volume"].replace(0, 1)) * 100).round(1)
+    agrupado["% on hold"] = ((agrupado["on_hold"] / agrupado["volume"].replace(0, 1)) * 100).round(1)
+
+    def calcular_linha(row):
+        perf = float(row.get("performance_media", 0) or 0)
+        ofensores = int(row.get("ofensores", 0) or 0)
+        rotas = max(int(row.get("rotas", 0) or 0), 1)
+        pct_of = float(row.get("% ofensores", 0) or 0)
+        pct_pend = float(row.get("% pendentes", 0) or 0)
+        pct_oh = float(row.get("% on hold", 0) or 0)
+
+        nota = 100.0
+        # Performance pesa mais: quanto mais distante de 98%, maior a perda.
+        nota -= max(0.0, 98.0 - perf) * 1.7
+        # Reincidência pesa muito, porque o objetivo é apoiar o planejamento.
+        nota -= min(32.0, ofensores * 7.5)
+        nota -= min(18.0, pct_of * 0.30)
+        # Pendentes recorrentes e On Hold também entram, mas com peso menor.
+        nota -= min(16.0, pct_pend * 0.90)
+        nota -= min(8.0, pct_oh * 0.35)
+        # Bônus pequeno para consistência: várias rotas, sem ofensor e média alta.
+        if perf >= 98.0 and ofensores == 0 and rotas >= 3:
+            nota += min(5.0, rotas * 0.5)
+
+        nota = max(0.0, min(100.0, nota))
+        if nota >= 90:
+            faixa = "🟢 Confiável"
+            recomendacao = "Prioridade positiva para escala"
+        elif nota >= 75:
+            faixa = "🟡 Atenção"
+            recomendacao = "Acompanhar na operação"
+        else:
+            faixa = "🔴 Alto risco"
+            recomendacao = "Avaliar antes de escalar"
+        return pd.Series([round(nota, 1), faixa, recomendacao])
+
+    agrupado[["Índice", "Classificação", "Recomendação"]] = agrupado.apply(calcular_linha, axis=1)
+    agrupado["performance_media"] = agrupado["performance_media"].round(1)
+    agrupado = agrupado.sort_values(["Índice", "performance_media", "rotas"], ascending=[False, False, False])
+    return agrupado
+
+
 def render_inteligencia_operacional(hub):
     html(f'<div class="section-title">📈 Inteligência Operacional - {hub}</div>')
     st.caption("Histórico de reutilização semanal dos motoristas e reincidência de ofensores por dia, semana e mês.")
@@ -2106,12 +2193,67 @@ def render_inteligencia_operacional(hub):
     c3.metric("Vezes ofensor", f"{total_ofensoras:,}".replace(",", "."))
     c4.metric("Performance média", f"{perf_media:.1f}%")
 
-    tab_reuso, tab_ofensores, tab_motorista, tab_base = st.tabs([
+    tab_confiabilidade, tab_reuso, tab_ofensores, tab_motorista, tab_base = st.tabs([
+        "🧭 Confiabilidade",
         "🔁 Reutilização semanal",
         "🔥 Ofensores",
         "👤 Histórico por motorista",
         "📄 Base completa"
     ])
+
+
+    with tab_confiabilidade:
+        html('<div class="section-title">🧭 Índice de Confiabilidade</div>')
+        st.caption("Nota calculada com base em performance média, reincidência como ofensor, pendentes, On Hold e consistência no período selecionado.")
+        indice = montar_indice_confiabilidade(df)
+        if indice is None or indice.empty:
+            st.info("Ainda não há dados suficientes para calcular o índice de confiabilidade.")
+        else:
+            qtd_confiavel = int((indice["Classificação"] == "🟢 Confiável").sum())
+            qtd_atencao = int((indice["Classificação"] == "🟡 Atenção").sum())
+            qtd_risco = int((indice["Classificação"] == "🔴 Alto risco").sum())
+            media_indice = float(indice["Índice"].mean()) if len(indice) else 0
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("🟢 Confiáveis", f"{qtd_confiavel:,}".replace(",", "."))
+            k2.metric("🟡 Atenção", f"{qtd_atencao:,}".replace(",", "."))
+            k3.metric("🔴 Alto risco", f"{qtd_risco:,}".replace(",", "."))
+            k4.metric("Média do índice", f"{media_indice:.1f}")
+
+            filtro_confianca = st.selectbox(
+                "Filtrar classificação",
+                ["Todos", "🟢 Confiável", "🟡 Atenção", "🔴 Alto risco"],
+                key=f"filtro_confianca_{hub}"
+            )
+            exibicao_indice = indice.copy()
+            if filtro_confianca != "Todos":
+                exibicao_indice = exibicao_indice[exibicao_indice["Classificação"] == filtro_confianca]
+
+            cols_indice = [
+                "Índice", "Classificação", "Recomendação", "driver_id", "motorista", "rotas", "dias_trabalhados",
+                "performance_media", "ofensores", "% ofensores", "volume", "pendentes", "% pendentes", "on_hold", "% on hold", "ultima_data"
+            ]
+            cols_indice = [c for c in cols_indice if c in exibicao_indice.columns]
+            st.dataframe(exibicao_indice[cols_indice].rename(columns={
+                "driver_id": "Driver ID",
+                "motorista": "Motorista",
+                "rotas": "Rotas",
+                "dias_trabalhados": "Dias trabalhados",
+                "performance_media": "Performance média",
+                "ofensores": "Vezes ofensor",
+                "volume": "Volume",
+                "pendentes": "Pendentes",
+                "on_hold": "On Hold",
+                "ultima_data": "Última data"
+            }), use_container_width=True, hide_index=True)
+
+            st.download_button(
+                "📥 Exportar índice de confiabilidade",
+                data=indice.to_csv(index=False, sep=";", encoding="utf-8-sig"),
+                file_name=f"{hub}_indice_confiabilidade_{agora_brasil().strftime('%d-%m-%Y')}.csv",
+                mime="text/csv",
+                key=f"csv_indice_confiabilidade_{hub}",
+                type="primary"
+            )
 
     with tab_reuso:
         html('<div class="section-title">🔁 Motoristas reutilizados na semana</div>')
@@ -2194,10 +2336,18 @@ def render_inteligencia_operacional(hub):
             media = float(detalhe["performance"].mean())
             ofens = int(detalhe["ofensora"].sum())
             m1, m2, m3, m4 = st.columns(4)
+            indice_motorista = montar_indice_confiabilidade(detalhe)
+            indice_txt = "-"
+            classe_txt = "-"
+            if indice_motorista is not None and not indice_motorista.empty:
+                indice_txt = f"{float(indice_motorista.iloc[0].get('Índice', 0)):.1f}"
+                classe_txt = str(indice_motorista.iloc[0].get("Classificação", "-"))
+
             m1.metric("Rotas", rotas)
             m2.metric("Volume", f"{volume:,}".replace(",", "."))
             m3.metric("Performance média", f"{media:.1f}%")
-            m4.metric("Vezes ofensor", ofens)
+            m4.metric("Índice", indice_txt)
+            st.info(f"Classificação do motorista: **{classe_txt}** | Vezes ofensor no período: **{ofens}**")
             cols = ["data", "janela", "at", "gaiola", "volume", "entregues", "on_hold", "pendentes", "performance", "ofensora"]
             cols = [c for c in cols if c in detalhe.columns]
             st.dataframe(detalhe[cols].rename(columns={
