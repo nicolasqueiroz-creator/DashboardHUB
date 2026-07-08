@@ -200,21 +200,14 @@ def sincronizar_widgets_config_hub(hub):
         st.session_state[f"ats_pm_{hub}"] = config.get("ats_pm", "")
         st.session_state[f"database_{hub}"] = db_link
 
-        # Chaves persistentes e chaves de widget do formulário de configuração.
-        valores_config = {
-            "bash_list": config.get("bash_list", ""),
-            "bash_v2": config.get("bash_v2", ""),
-            "ats_am": config.get("ats_am", ats_legado),
-            "ats_pm": config.get("ats_pm", ""),
-            "database": db_link,
-        }
-        for nome_cfg, valor_cfg in valores_config.items():
-            st.session_state[_cfg_dur_key(nome_cfg, hub)] = valor_cfg
-        st.session_state[f"cfg_bash_list_{hub}"] = valores_config["bash_list"]
-        st.session_state[f"cfg_bash_v2_{hub}"] = valores_config["bash_v2"]
-        st.session_state[f"cfg_ats_am_{hub}"] = valores_config["ats_am"]
-        st.session_state[f"cfg_ats_pm_{hub}"] = valores_config["ats_pm"]
-        st.session_state[f"cfg_database_{hub}"] = valores_config["database"]
+        # Chaves persistentes do formulário de configuração.
+        # Essas chaves não dependem da aba estar renderizada e evitam que o Streamlit
+        # limpe os valores ao trocar entre Dashboard, Ranking, Inteligência e Configuração.
+        st.session_state[f"cfg_bash_list_{hub}"] = config.get("bash_list", "")
+        st.session_state[f"cfg_bash_v2_{hub}"] = config.get("bash_v2", "")
+        st.session_state[f"cfg_ats_am_{hub}"] = config.get("ats_am", ats_legado)
+        st.session_state[f"cfg_ats_pm_{hub}"] = config.get("ats_pm", "")
+        st.session_state[f"cfg_database_{hub}"] = db_link
     except Exception as e:
         safe_log(f"Erro ao sincronizar campos do hub {hub}: {e}")
 
@@ -3103,83 +3096,99 @@ def render_dashboard_hub(hub):
 
 
 
-def _cfg_dur_key(nome, hub):
-    return f"cfg_persist_{nome}_{hub}"
-
-
-def garantir_config_form_hub(hub):
-    """
-    Garante que as configurações tenham duas camadas:
-    1) cfg_persist_*: estado permanente, não ligado diretamente ao widget.
-    2) cfg_*: estado do widget, que o Streamlit pode limpar quando a aba não é renderizada.
-
-    O bug anterior acontecia porque as chaves dos widgets sumiam ao trocar de aba.
-    Com esta camada persistente, os valores continuam vivos mesmo fora da aba Configuração.
-    """
-    config = st.session_state.config_por_hub.get(hub, config_default())
-    ats_legado = config.get("ats", "")
-
-    valores_iniciais = {
-        "bash_list": config.get("bash_list", ""),
-        "bash_v2": config.get("bash_v2", ""),
-        "ats_am": config.get("ats_am", ats_legado),
-        "ats_pm": config.get("ats_pm", ""),
-        "database": config.get("db_link", st.session_state.db_links_por_hub.get(hub, "")),
-    }
-
-    # Primeiro garante as chaves permanentes.
-    for nome, valor in valores_iniciais.items():
-        chave_persistente = _cfg_dur_key(nome, hub)
-        if chave_persistente not in st.session_state:
-            st.session_state[chave_persistente] = valor
-
-    # Depois repopula as chaves dos widgets quando elas não existem.
-    mapa_widget = {
-        f"cfg_bash_list_{hub}": _cfg_dur_key("bash_list", hub),
-        f"cfg_bash_v2_{hub}": _cfg_dur_key("bash_v2", hub),
-        f"cfg_ats_am_{hub}": _cfg_dur_key("ats_am", hub),
-        f"cfg_ats_pm_{hub}": _cfg_dur_key("ats_pm", hub),
-        f"cfg_database_{hub}": _cfg_dur_key("database", hub),
-    }
-    for chave_widget, chave_persistente in mapa_widget.items():
-        if chave_widget not in st.session_state:
-            st.session_state[chave_widget] = st.session_state.get(chave_persistente, "")
-
-
-def atualizar_config_hub_em_memoria(hub):
-    """
-    Copia os valores digitados no formulário para uma camada permanente e para config_por_hub.
-    Nunca sobrescreve a configuração com vazio só porque a aba Configuração não está renderizada.
-    """
-    garantir_config_form_hub(hub)
-
-    pares = {
+def _config_widget_keys(hub):
+    return {
         "bash_list": f"cfg_bash_list_{hub}",
         "bash_v2": f"cfg_bash_v2_{hub}",
         "ats_am": f"cfg_ats_am_{hub}",
         "ats_pm": f"cfg_ats_pm_{hub}",
-        "database": f"cfg_database_{hub}",
+        "db_link": f"cfg_database_{hub}",
     }
 
-    for nome, chave_widget in pares.items():
-        chave_persistente = _cfg_dur_key(nome, hub)
-        if chave_widget in st.session_state:
-            st.session_state[chave_persistente] = st.session_state.get(chave_widget, "")
 
-    ats_am = st.session_state.get(_cfg_dur_key("ats_am", hub), "")
-    ats_pm = st.session_state.get(_cfg_dur_key("ats_pm", hub), "")
+def _config_mem_keys(hub):
+    # Chaves NÃO usadas por widgets. O Streamlit não remove essas chaves ao trocar de aba.
+    return {
+        "bash_list": f"mem_cfg_bash_list_{hub}",
+        "bash_v2": f"mem_cfg_bash_v2_{hub}",
+        "ats_am": f"mem_cfg_ats_am_{hub}",
+        "ats_pm": f"mem_cfg_ats_pm_{hub}",
+        "db_link": f"mem_cfg_database_{hub}",
+    }
+
+
+def _config_atual_do_hub(hub):
+    config = st.session_state.config_por_hub.get(hub, config_default())
+    ats_legado = config.get("ats", "")
+    return {
+        "bash_list": config.get("bash_list", ""),
+        "bash_v2": config.get("bash_v2", ""),
+        "ats_am": config.get("ats_am", ats_legado),
+        "ats_pm": config.get("ats_pm", ""),
+        "db_link": config.get("db_link", st.session_state.db_links_por_hub.get(hub, "")),
+    }
+
+
+def garantir_config_form_hub(hub):
+    """
+    Mantém uma cópia persistente dos campos da Configuração.
+
+    O Streamlit pode limpar o valor de widgets que deixam de ser renderizados ao trocar
+    de aba. Por isso usamos duas camadas:
+    - cfg_*: chave do widget visível.
+    - mem_cfg_*: chave permanente, não vinculada a widget.
+    """
+    valores_config = _config_atual_do_hub(hub)
+    widget_keys = _config_widget_keys(hub)
+    mem_keys = _config_mem_keys(hub)
+
+    for campo, mem_key in mem_keys.items():
+        if mem_key not in st.session_state:
+            st.session_state[mem_key] = valores_config.get(campo, "")
+
+    for campo, widget_key in widget_keys.items():
+        mem_valor = st.session_state.get(mem_keys[campo], "")
+        config_valor = valores_config.get(campo, "")
+
+        # Se o widget não existe, restaura da memória permanente.
+        if widget_key not in st.session_state:
+            st.session_state[widget_key] = mem_valor if mem_valor != "" else config_valor
+
+        # Caso o Streamlit tenha mantido a chave, mas zerado ao trocar de aba,
+        # restaura a partir da memória permanente ou da configuração salva.
+        elif st.session_state.get(widget_key, "") == "" and (mem_valor or config_valor):
+            st.session_state[widget_key] = mem_valor if mem_valor != "" else config_valor
+
+
+def atualizar_config_hub_em_memoria(hub):
+    """Copia os valores digitados no formulário para memória permanente e config_por_hub."""
+    widget_keys = _config_widget_keys(hub)
+    mem_keys = _config_mem_keys(hub)
+
+    valores = {}
+    for campo in widget_keys:
+        widget_key = widget_keys[campo]
+        mem_key = mem_keys[campo]
+        if widget_key in st.session_state:
+            valores[campo] = st.session_state.get(widget_key, "")
+            st.session_state[mem_key] = valores[campo]
+        else:
+            valores[campo] = st.session_state.get(mem_key, "")
+
+    ats_am = valores.get("ats_am", "")
+    ats_pm = valores.get("ats_pm", "")
     config = {
-        "bash_list": st.session_state.get(_cfg_dur_key("bash_list", hub), ""),
-        "bash_v2": st.session_state.get(_cfg_dur_key("bash_v2", hub), ""),
+        "bash_list": valores.get("bash_list", ""),
+        "bash_v2": valores.get("bash_v2", ""),
         "ats": "\n".join([ats_am, ats_pm]).strip(),
         "ats_am": ats_am,
         "ats_pm": ats_pm,
-        "db_link": st.session_state.get(_cfg_dur_key("database", hub), ""),
+        "db_link": valores.get("db_link", ""),
     }
     st.session_state.config_por_hub[hub] = config
     st.session_state.db_links_por_hub[hub] = config["db_link"]
 
-    # Mantém também as chaves antigas sincronizadas para compatibilidade com outros trechos.
+    # Chaves antigas mantidas atualizadas por compatibilidade com o restante do app.
     st.session_state[f"bash_list_{hub}"] = config["bash_list"]
     st.session_state[f"bash_v2_{hub}"] = config["bash_v2"]
     st.session_state[f"ats_{hub}"] = config["ats"]
@@ -3191,10 +3200,7 @@ def atualizar_config_hub_em_memoria(hub):
 def persistir_configs_digitadas_em_memoria():
     """Preserva configurações digitadas antes de qualquer mudança de tela/aba."""
     for hub in HUBS:
-        try:
-            atualizar_config_hub_em_memoria(hub)
-        except Exception:
-            pass
+        atualizar_config_hub_em_memoria(hub)
 
 def render_configuracao_hub(hub):
     html(f'<div class="config-title">⚙️ Configuração Operacional - {hub}</div><div class="config-subtitle">Cole o Bash LIST, o Bash V2 e as ATs específicas deste hub.</div>')
@@ -3504,8 +3510,7 @@ else:
         key=chave_aba_hub,
         horizontal=True,
         label_visibility="collapsed",
-        on_change=atualizar_config_hub_em_memoria,
-        args=(hub_atual,)
+        on_change=persistir_configs_digitadas_em_memoria
     )
 
     if aba_ativa.startswith("📊"):
