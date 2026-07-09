@@ -3421,29 +3421,21 @@ else:
         subtitulo=f"Performance operacional em tempo real do hub {hub_atual}."
     )
 
-    opcoes_abas_hub = [
+    aba_dashboard, aba_ranking, aba_inteligencia, aba_config = st.tabs([
         f"📊 Dashboard {hub_atual}",
         f"🏆 Ranking {hub_atual}",
         f"📈 Inteligência {hub_atual}",
         f"⚙️ Configuração {hub_atual}"
-    ]
-    chave_aba_hub = f"aba_ativa_hub_{hub_atual}"
-    if chave_aba_hub not in st.session_state or st.session_state[chave_aba_hub] not in opcoes_abas_hub:
-        st.session_state[chave_aba_hub] = opcoes_abas_hub[0]
+    ])
 
-    aba_ativa = st.radio(
-        "Navegação do hub",
-        opcoes_abas_hub,
-        key=chave_aba_hub,
-        horizontal=True,
-        label_visibility="collapsed"
-    )
-
-    if aba_ativa.startswith("📊"):
+    with aba_dashboard:
         render_dashboard_hub(hub_atual)
-    elif aba_ativa.startswith("🏆"):
+
+    with aba_ranking:
         render_ranking_hub(hub_atual)
-    elif aba_ativa.startswith("📈"):
+
+    with aba_inteligencia:
         render_inteligencia_operacional(hub_atual)
-    elif aba_ativa.startswith("⚙️"):
+
+    with aba_config:
         render_configuracao_hub(hub_atual)
