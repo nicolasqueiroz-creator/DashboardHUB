@@ -50,7 +50,6 @@ ROTAS_CACHE_PATH = BASE_DIR / "rotas_cache.pkl"
 USERS_PATH = BASE_DIR / "usuarios.json"
 PENDING_USERS_PATH = BASE_DIR / "cadastros_pendentes.json"
 SESSIONS_PATH = BASE_DIR / "sessoes.json"
-CONFIG_DRAFT_PATH = BASE_DIR / "config_draft_dia.json"
 
 HUBS = ["LPE-02", "LPE-03", "LPE-07", "LPE-11", "LPE-12"]
 FUSO_BRASIL = ZoneInfo("America/Recife")
@@ -85,65 +84,12 @@ def config_default():
     return {"bash_list": "", "bash_v2": "", "ats": "", "ats_am": "", "ats_pm": "", "db_link": ""}
 
 
-def _data_config_dia():
-    try:
-        return agora_brasil().strftime("%Y-%m-%d")
-    except Exception:
-        return datetime.now().strftime("%Y-%m-%d")
 
 
-def carregar_config_draft_dia():
-    """Carrega uma cópia local dos campos da Configuração válida apenas para o dia atual.
-    Isso evita que os campos sumam ao trocar de aba, mesmo quando o Streamlit remove
-    os widgets que não estão visíveis.
-    """
-    try:
-        if CONFIG_DRAFT_PATH.exists():
-            with open(CONFIG_DRAFT_PATH, "r", encoding="utf-8") as f:
-                dados = json.load(f)
-            if isinstance(dados, dict) and dados.get("data") == _data_config_dia():
-                return dados.get("hubs", {}) if isinstance(dados.get("hubs"), dict) else {}
-    except Exception:
-        pass
-    return {}
 
 
-def salvar_config_draft_dia(hub=None):
-    try:
-        hubs_cfg = carregar_config_draft_dia()
-        if hub in HUBS:
-            cfg = st.session_state.config_por_hub.get(hub, config_default())
-            hubs_cfg[hub] = {
-                "bash_list": cfg.get("bash_list", ""),
-                "bash_v2": cfg.get("bash_v2", ""),
-                "ats": cfg.get("ats", ""),
-                "ats_am": cfg.get("ats_am", cfg.get("ats", "")),
-                "ats_pm": cfg.get("ats_pm", ""),
-                "db_link": cfg.get("db_link", st.session_state.db_links_por_hub.get(hub, "")),
-            }
-        else:
-            for h in HUBS:
-                cfg = st.session_state.config_por_hub.get(h, config_default())
-                hubs_cfg[h] = {
-                    "bash_list": cfg.get("bash_list", ""),
-                    "bash_v2": cfg.get("bash_v2", ""),
-                    "ats": cfg.get("ats", ""),
-                    "ats_am": cfg.get("ats_am", cfg.get("ats", "")),
-                    "ats_pm": cfg.get("ats_pm", ""),
-                    "db_link": cfg.get("db_link", st.session_state.db_links_por_hub.get(h, "")),
-                }
-        tmp_path = CONFIG_DRAFT_PATH.with_suffix(".tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump({"data": _data_config_dia(), "hubs": hubs_cfg}, f, ensure_ascii=False, indent=2)
-        tmp_path.replace(CONFIG_DRAFT_PATH)
-    except Exception as e:
-        safe_log(f"Erro ao salvar rascunho diário de configuração: {e}")
 
 
-def obter_config_draft_dia_hub(hub):
-    cfgs = carregar_config_draft_dia()
-    cfg = cfgs.get(hub, {}) if isinstance(cfgs, dict) else {}
-    return cfg if isinstance(cfg, dict) else {}
 
 
 def montar_dados_hub_para_salvar(hub):
@@ -252,37 +198,12 @@ def sincronizar_widgets_config_hub(hub):
     try:
         config = st.session_state.config_por_hub.get(hub, config_default())
         ats_legado = config.get("ats", "")
-        db_link = config.get("db_link", st.session_state.db_links_por_hub.get(hub, ""))
-
-        # Chaves antigas mantidas por compatibilidade.
         st.session_state[f"bash_list_{hub}"] = config.get("bash_list", "")
         st.session_state[f"bash_v2_{hub}"] = config.get("bash_v2", "")
         st.session_state[f"ats_{hub}"] = ats_legado
         st.session_state[f"ats_am_{hub}"] = config.get("ats_am", ats_legado)
         st.session_state[f"ats_pm_{hub}"] = config.get("ats_pm", "")
-        st.session_state[f"database_{hub}"] = db_link
-
-        # Chaves persistentes do formulário de configuração.
-        # Essas chaves não dependem da aba estar renderizada e evitam que o Streamlit
-        # limpe os valores ao trocar entre Dashboard, Ranking, Inteligência e Configuração.
-        st.session_state[f"cfg_bash_list_{hub}"] = config.get("bash_list", "")
-        st.session_state[f"cfg_bash_v2_{hub}"] = config.get("bash_v2", "")
-        st.session_state[f"cfg_ats_am_{hub}"] = config.get("ats_am", ats_legado)
-        st.session_state[f"cfg_ats_pm_{hub}"] = config.get("ats_pm", "")
-        st.session_state[f"cfg_database_{hub}"] = db_link
-
-        # Também alimenta o draft permanente usado pela tela de Configuração.
-        for campo, valor in {
-            "bash_list": config.get("bash_list", ""),
-            "bash_v2": config.get("bash_v2", ""),
-            "ats_am": config.get("ats_am", ats_legado),
-            "ats_pm": config.get("ats_pm", ""),
-            "database": db_link,
-        }.items():
-            if str(valor or "").strip() or _cfg_draft_key(hub, campo) not in st.session_state:
-                st.session_state[_cfg_draft_key(hub, campo)] = valor
-        atualizar_config_hub_em_memoria(hub)
-        salvar_config_draft_dia(hub)
+        st.session_state[f"database_{hub}"] = config.get("db_link", st.session_state.db_links_por_hub.get(hub, ""))
     except Exception as e:
         safe_log(f"Erro ao sincronizar campos do hub {hub}: {e}")
 
@@ -3281,25 +3202,28 @@ def render_configuracao_hub(hub):
 
     if st.button(f"🔄 Recarregar configurações salvas do {hub}", key=f"reload_config_{hub}", type="primary"):
         carregar_hub_supabase(hub, atualizar_widgets=True)
-        config_recarregada = st.session_state.config_por_hub.get(hub, config_default())
-        ats_legado = config_recarregada.get("ats", "")
-        for campo, valor in {
-            "bash_list": config_recarregada.get("bash_list", ""),
-            "bash_v2": config_recarregada.get("bash_v2", ""),
-            "ats_am": config_recarregada.get("ats_am", ats_legado),
-            "ats_pm": config_recarregada.get("ats_pm", ""),
-            "database": config_recarregada.get("db_link", ""),
-        }.items():
-            st.session_state[_cfg_draft_key(hub, campo)] = valor
-            st.session_state[_cfg_ui_key(hub, campo)] = valor
         st.success(f"Configurações do {hub} recarregadas do Supabase.")
         time.sleep(0.5)
         st.rerun()
 
-    garantir_config_form_hub(hub)
+    config_hub = st.session_state.config_por_hub.get(hub, config_default())
 
-    bash_list = st.text_area("Bash LIST / AUTH", height=180, key=_cfg_ui_key(hub, "bash_list"), on_change=_copiar_ui_config_para_draft, args=(hub, "bash_list"))
-    bash_v2 = st.text_area("Bash V2", height=240, key=_cfg_ui_key(hub, "bash_v2"), on_change=_copiar_ui_config_para_draft, args=(hub, "bash_v2"))
+    if f"bash_list_{hub}" not in st.session_state:
+        st.session_state[f"bash_list_{hub}"] = config_hub.get("bash_list", "")
+    if f"bash_v2_{hub}" not in st.session_state:
+        st.session_state[f"bash_v2_{hub}"] = config_hub.get("bash_v2", "")
+    ats_legado = config_hub.get("ats", "")
+    if f"ats_{hub}" not in st.session_state:
+        st.session_state[f"ats_{hub}"] = ats_legado
+    if f"ats_am_{hub}" not in st.session_state:
+        st.session_state[f"ats_am_{hub}"] = config_hub.get("ats_am", ats_legado)
+    if f"ats_pm_{hub}" not in st.session_state:
+        st.session_state[f"ats_pm_{hub}"] = config_hub.get("ats_pm", "")
+    if f"database_{hub}" not in st.session_state:
+        st.session_state[f"database_{hub}"] = config_hub.get("db_link", st.session_state.db_links_por_hub.get(hub, ""))
+
+    bash_list = st.text_area("Bash LIST / AUTH", height=180, key=f"bash_list_{hub}")
+    bash_v2 = st.text_area("Bash V2", height=240, key=f"bash_v2_{hub}")
 
     aba_ats_am, aba_ats_pm = st.tabs(["🌅 ATs AM", "🌆 ATs PM"])
     with aba_ats_am:
@@ -3307,23 +3231,27 @@ def render_configuracao_hub(hub):
             "ATs AM para buscar",
             height=170,
             placeholder="Cole as ATs do AM, uma por linha ou separadas por vírgula.",
-            key=_cfg_ui_key(hub, "ats_am"),
-            on_change=_copiar_ui_config_para_draft, args=(hub, "ats_am")
+            key=f"ats_am_{hub}"
         )
     with aba_ats_pm:
         ats_pm_texto = st.text_area(
             "ATs PM para buscar",
             height=170,
             placeholder="Cole as ATs do PM, uma por linha ou separadas por vírgula.",
-            key=_cfg_ui_key(hub, "ats_pm"),
-            on_change=_copiar_ui_config_para_draft, args=(hub, "ats_pm")
+            key=f"ats_pm_{hub}"
         )
 
-    link_database = st.text_input("Link da planilha Database do Hub", placeholder="Cole o link da aba Database. Coluna B = Nome | Coluna I = Telefone", key=_cfg_ui_key(hub, "database"), on_change=_copiar_ui_config_para_draft, args=(hub, "database"))
+    link_database = st.text_input("Link da planilha Database do Hub", placeholder="Cole o link da aba Database. Coluna B = Nome | Coluna I = Telefone", key=f"database_{hub}")
 
-    # Atualiza a cópia em memória em todo rerun. Assim, ao sair da aba Configuração,
-    # os dados digitados continuam vivos e não somem na volta.
-    atualizar_config_hub_em_memoria(hub)
+    st.session_state.config_por_hub[hub] = {
+        "bash_list": bash_list,
+        "bash_v2": bash_v2,
+        "ats": "\n".join([ats_am_texto, ats_pm_texto]).strip(),
+        "ats_am": ats_am_texto,
+        "ats_pm": ats_pm_texto,
+        "db_link": link_database,
+    }
+    st.session_state.db_links_por_hub[hub] = link_database
 
     arquivo_database = st.file_uploader("Anexar arquivo Database do Hub (.xlsx, .xls ou .csv)", type=["xlsx", "xls", "csv"], key=f"database_file_{hub}")
     col_a, col_c, col_b = st.columns([1, 1, 2])
@@ -3335,8 +3263,18 @@ def render_configuracao_hub(hub):
         somente_v2 = st.checkbox("Buscar todas as páginas do V2", value=True, key=f"somente_v2_{hub}")
 
     if st.button(f"💾 Salvar configurações do {hub}", use_container_width=True, key=f"salvar_config_{hub}", type="primary"):
-        atualizar_config_hub_em_memoria(hub)
-        salvar_estado_persistido(hub)
+        ats_am_salvar = st.session_state.get(f"ats_am_{hub}", "")
+        ats_pm_salvar = st.session_state.get(f"ats_pm_{hub}", "")
+        st.session_state.config_por_hub[hub] = {
+            "bash_list": st.session_state.get(f"bash_list_{hub}", ""),
+            "bash_v2": st.session_state.get(f"bash_v2_{hub}", ""),
+            "ats": "\n".join([ats_am_salvar, ats_pm_salvar]).strip(),
+            "ats_am": ats_am_salvar,
+            "ats_pm": ats_pm_salvar,
+            "db_link": st.session_state.get(f"database_{hub}", ""),
+        }
+        st.session_state.db_links_por_hub[hub] = st.session_state.config_por_hub[hub]["db_link"]
+        salvar_estado_persistido()
         st.success(f"Configurações do {hub} salvas na nuvem.")
 
     if carregar_contatos_btn:
