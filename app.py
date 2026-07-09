@@ -62,6 +62,9 @@ SUPABASE_TABLE_USUARIOS = "usuarios"
 SUPABASE_TABLE_PENDENTES = "cadastros_pendentes"
 SUPABASE_TABLE_SESSOES = "sessoes"
 SUPABASE_TABLE_HISTORICO_DRIVER = "historico_driver"
+SUPABASE_TABLE_FECHAMENTO_DRIVER = "historico_fechamento_driver"
+FECHAMENTO_AUTO_HORA = 23
+FECHAMENTO_AUTO_MINUTO = 50
 
 def safe_log(msg):
     try:
@@ -2028,6 +2031,131 @@ def salvar_historico_driver_supabase(hub, rotas, limite_ofensor=95.0):
         return False
 
 
+
+
+def salvar_fechamento_driver_supabase(hub, rotas, limite_ofensor=95.0, data_fechamento=None, origem="manual"):
+    """
+    Salva o fechamento oficial do dia em uma tabela separada.
+    A chave historico_id evita duplicidade: se salvar novamente no mesmo dia,
+    a linha da mesma AT é atualizada em vez de duplicada.
+    """
+    try:
+        sb = get_supabase()
+        if not sb:
+            safe_log("Supabase não configurado. Fechamento não salvo na nuvem.")
+            return False
+
+        data_ref = data_fechamento or agora_brasil().date()
+        linhas_base = montar_linhas_historico_driver(hub, rotas, limite_ofensor=limite_ofensor)
+        linhas = []
+
+        for linha in linhas_base:
+            at = str(linha.get("at", "") or "").strip().upper()
+            if not at:
+                continue
+
+            linha["data"] = data_ref.isoformat()
+            iso = data_ref.isocalendar()
+            linha["semana"] = int(iso.week)
+            linha["mes"] = int(data_ref.month)
+            linha["ano"] = int(data_ref.year)
+            linha["historico_id"] = f"{data_ref.isoformat()}_{hub}_{at}"
+            linha["origem"] = origem
+            linha["fechado_por"] = st.session_state.get("usuario_login", "")
+            linha["fechado_em"] = agora_brasil().isoformat()
+            linha["atualizado_em"] = agora_brasil().isoformat()
+            linhas.append(linha)
+
+        if not linhas:
+            safe_log("Fechamento: nenhuma rota válida para salvar.")
+            return False
+
+        for i in range(0, len(linhas), 300):
+            lote = linhas[i:i+300]
+            sb.table(SUPABASE_TABLE_FECHAMENTO_DRIVER).upsert(lote, on_conflict="historico_id").execute()
+
+        chave_sessao = f"fechamento_salvo_{hub}_{data_ref.isoformat()}"
+        st.session_state[chave_sessao] = True
+        safe_log(f"Fechamento salvo: {len(linhas)} rotas do {hub} em {data_ref.strftime('%d/%m/%Y')}.")
+        return True
+
+    except Exception as e:
+        safe_log(f"Erro ao salvar fechamento do {hub}: {e}")
+        return False
+
+
+def fechamento_ja_existe_supabase(hub, data_ref=None):
+    """Verifica se já existe fechamento salvo para o hub/data."""
+    try:
+        sb = get_supabase()
+        if not sb:
+            return False
+        data_ref = data_ref or agora_brasil().date()
+        resp = (
+            sb.table(SUPABASE_TABLE_FECHAMENTO_DRIVER)
+            .select("historico_id")
+            .eq("hub", hub)
+            .eq("data", data_ref.isoformat())
+            .limit(1)
+            .execute()
+        )
+        return bool(resp.data)
+    except Exception as e:
+        safe_log(f"Erro ao verificar fechamento do {hub}: {e}")
+        return False
+
+
+def auto_salvar_fechamento_driver(hub, limite_ofensor=95.0):
+    """
+    Tenta salvar automaticamente no fim do dia.
+    Observação: em Streamlit isso roda quando o app estiver aberto ou receber interação.
+    Para execução garantida às 23:50, é necessário agendador externo/Streamlit sempre ativo.
+    """
+    try:
+        agora = agora_brasil()
+        if agora.hour < FECHAMENTO_AUTO_HORA or (agora.hour == FECHAMENTO_AUTO_HORA and agora.minute < FECHAMENTO_AUTO_MINUTO):
+            return False
+
+        chave_sessao = f"fechamento_salvo_{hub}_{agora.date().isoformat()}"
+        if st.session_state.get(chave_sessao):
+            return False
+
+        rotas = st.session_state.rotas_por_hub.get(hub, [])
+        if not rotas:
+            return False
+
+        if fechamento_ja_existe_supabase(hub, agora.date()):
+            st.session_state[chave_sessao] = True
+            return False
+
+        return salvar_fechamento_driver_supabase(
+            hub,
+            rotas,
+            limite_ofensor=limite_ofensor,
+            data_fechamento=agora.date(),
+            origem="automatico"
+        )
+    except Exception as e:
+        safe_log(f"Erro no fechamento automático do {hub}: {e}")
+        return False
+
+
+def carregar_fechamento_driver_supabase(hub, dias=35):
+    try:
+        sb = get_supabase()
+        if not sb:
+            return []
+        data_min = (agora_brasil().date() - pd.Timedelta(days=int(dias))).isoformat() if pd is not None else None
+        query = sb.table(SUPABASE_TABLE_FECHAMENTO_DRIVER).select("*").eq("hub", hub)
+        if data_min:
+            query = query.gte("data", data_min)
+        resp = query.order("data", desc=True).execute()
+        return resp.data or []
+    except Exception as e:
+        safe_log(f"Erro ao carregar fechamento do {hub}: {e}")
+        return []
+
+
 def carregar_historico_driver_supabase(hub, dias=35):
     try:
         sb = get_supabase()
@@ -2047,7 +2175,7 @@ def carregar_historico_driver_supabase(hub, dias=35):
 def preparar_df_historico(hub, dias):
     if pd is None:
         return None
-    dados = carregar_historico_driver_supabase(hub, dias=dias)
+    dados = carregar_fechamento_driver_supabase(hub, dias=dias)
     df = pd.DataFrame(dados)
     if df.empty:
         return df
@@ -2155,28 +2283,31 @@ def montar_indice_confiabilidade(df):
 
 def render_inteligencia_operacional(hub):
     html(f'<div class="section-title">📈 Inteligência Operacional - {hub}</div>')
-    st.caption("Histórico de reutilização semanal dos motoristas e reincidência de ofensores por dia, semana e mês.")
+    st.caption("Base oficial de fechamento diário: reutilização semanal, reincidência de ofensores e índice de confiabilidade a partir dos fechamentos salvos.")
 
     if pd is None:
         st.error("Para usar este módulo, instale pandas no projeto.")
         return
 
     rotas_atuais = st.session_state.rotas_por_hub.get(hub, [])
-    col_f1, col_f2, col_f3 = st.columns([1, 1, 1.2])
+    col_f1, col_f2, col_f3 = st.columns([1, 1, 1.35])
     with col_f1:
         dias = st.selectbox("Período", [7, 14, 30, 60, 90], index=2, format_func=lambda x: f"Últimos {x} dias", key=f"hist_dias_{hub}")
     with col_f2:
         limite_ofensor = st.number_input("Limite para ofensor (%)", min_value=0.0, max_value=100.0, value=95.0, step=1.0, key=f"hist_limite_{hub}")
     with col_f3:
-        if st.button("💾 Registrar snapshot atual no histórico", type="primary", key=f"salvar_hist_manual_{hub}", use_container_width=True):
-            if salvar_historico_driver_supabase(hub, rotas_atuais, limite_ofensor=limite_ofensor):
-                st.success("Snapshot salvo no histórico.")
+        if st.button("🌙 Salvar fechamento do dia", type="primary", key=f"salvar_fechamento_manual_{hub}", use_container_width=True):
+            if salvar_fechamento_driver_supabase(hub, rotas_atuais, limite_ofensor=limite_ofensor, origem="manual"):
+                st.success("Fechamento do dia salvo na Inteligência.")
             else:
-                st.warning("Não foi possível salvar o snapshot. Verifique a tabela historico_driver no Supabase.")
+                st.warning("Não foi possível salvar o fechamento. Verifique a tabela historico_fechamento_driver no Supabase.")
+
+    auto_salvar_fechamento_driver(hub, limite_ofensor=limite_ofensor)
+    st.caption(f"O fechamento automático tenta salvar a partir de {FECHAMENTO_AUTO_HORA:02d}:{FECHAMENTO_AUTO_MINUTO:02d}, quando o app estiver aberto ou receber interação. O botão acima permite salvar manualmente o fechamento oficial do dia.")
 
     df = preparar_df_historico(hub, dias)
     if df is None or df.empty:
-        st.info("Ainda não há histórico salvo para este hub. Atualize o hub ou clique em Registrar snapshot atual no histórico.")
+        st.info("Ainda não há fechamento salvo para este hub. Clique em Salvar fechamento do dia para iniciar a base limpa a partir de hoje.")
         return
 
     # Recalcula ofensor conforme o limite selecionado para visualização.
@@ -2965,48 +3096,69 @@ def render_dashboard_hub(hub):
 
 
 
+def _cfg_draft_key(hub, campo):
+    return f"draft_cfg_{campo}_{hub}"
+
+
+def _cfg_ui_key(hub, campo):
+    return f"ui_cfg_{campo}_{hub}"
+
+
 def garantir_config_form_hub(hub):
-    """Garante que os campos da configuração tenham uma cópia persistente no session_state."""
+    """Mantém uma cópia permanente dos campos, independente da aba estar renderizada."""
     config = st.session_state.config_por_hub.get(hub, config_default())
     ats_legado = config.get("ats", "")
     valores = {
-        f"cfg_bash_list_{hub}": config.get("bash_list", ""),
-        f"cfg_bash_v2_{hub}": config.get("bash_v2", ""),
-        f"cfg_ats_am_{hub}": config.get("ats_am", ats_legado),
-        f"cfg_ats_pm_{hub}": config.get("ats_pm", ""),
-        f"cfg_database_{hub}": config.get("db_link", st.session_state.db_links_por_hub.get(hub, "")),
+        "bash_list": config.get("bash_list", ""),
+        "bash_v2": config.get("bash_v2", ""),
+        "ats_am": config.get("ats_am", ats_legado),
+        "ats_pm": config.get("ats_pm", ""),
+        "database": config.get("db_link", st.session_state.db_links_por_hub.get(hub, "")),
     }
-    for chave, valor in valores.items():
-        if chave not in st.session_state:
-            st.session_state[chave] = valor
+    for campo, valor in valores.items():
+        chave_draft = _cfg_draft_key(hub, campo)
+        if chave_draft not in st.session_state:
+            st.session_state[chave_draft] = valor
+
+        # A chave ui_* pertence ao widget e pode ser removida pelo Streamlit quando
+        # a aba deixa de ser renderizada. Sempre a recriamos a partir do draft.
+        chave_ui = _cfg_ui_key(hub, campo)
+        if chave_ui not in st.session_state:
+            st.session_state[chave_ui] = st.session_state[chave_draft]
+
+
+def _copiar_ui_config_para_draft(hub, campo):
+    chave_ui = _cfg_ui_key(hub, campo)
+    chave_draft = _cfg_draft_key(hub, campo)
+    if chave_ui in st.session_state:
+        st.session_state[chave_draft] = st.session_state.get(chave_ui, "")
+    atualizar_config_hub_em_memoria(hub)
 
 
 def atualizar_config_hub_em_memoria(hub):
-    """Copia os valores digitados no formulário para config_por_hub sem depender de salvar."""
-    prefixos = [
-        f"cfg_bash_list_{hub}", f"cfg_bash_v2_{hub}",
-        f"cfg_ats_am_{hub}", f"cfg_ats_pm_{hub}", f"cfg_database_{hub}"
-    ]
-    if not any(chave in st.session_state for chave in prefixos):
-        return
-
-    ats_am = st.session_state.get(f"cfg_ats_am_{hub}", "")
-    ats_pm = st.session_state.get(f"cfg_ats_pm_{hub}", "")
+    """Atualiza config_por_hub usando somente a cópia permanente (draft)."""
+    garantir_config_form_hub(hub)
+    ats_am = st.session_state.get(_cfg_draft_key(hub, "ats_am"), "")
+    ats_pm = st.session_state.get(_cfg_draft_key(hub, "ats_pm"), "")
     config = {
-        "bash_list": st.session_state.get(f"cfg_bash_list_{hub}", ""),
-        "bash_v2": st.session_state.get(f"cfg_bash_v2_{hub}", ""),
+        "bash_list": st.session_state.get(_cfg_draft_key(hub, "bash_list"), ""),
+        "bash_v2": st.session_state.get(_cfg_draft_key(hub, "bash_v2"), ""),
         "ats": "\n".join([ats_am, ats_pm]).strip(),
         "ats_am": ats_am,
         "ats_pm": ats_pm,
-        "db_link": st.session_state.get(f"cfg_database_{hub}", ""),
+        "db_link": st.session_state.get(_cfg_draft_key(hub, "database"), ""),
     }
     st.session_state.config_por_hub[hub] = config
     st.session_state.db_links_por_hub[hub] = config["db_link"]
 
 
 def persistir_configs_digitadas_em_memoria():
-    """Preserva configurações digitadas antes de qualquer mudança de tela/aba."""
+    """Copia widgets ainda visíveis para o draft antes de mudar de aba."""
     for hub in HUBS:
+        for campo in ["bash_list", "bash_v2", "ats_am", "ats_pm", "database"]:
+            chave_ui = _cfg_ui_key(hub, campo)
+            if chave_ui in st.session_state:
+                st.session_state[_cfg_draft_key(hub, campo)] = st.session_state[chave_ui]
         atualizar_config_hub_em_memoria(hub)
 
 def render_configuracao_hub(hub):
@@ -3014,26 +3166,25 @@ def render_configuracao_hub(hub):
 
     if st.button(f"🔄 Recarregar configurações salvas do {hub}", key=f"reload_config_{hub}", type="primary"):
         carregar_hub_supabase(hub, atualizar_widgets=True)
+        config_recarregada = st.session_state.config_por_hub.get(hub, config_default())
+        ats_legado = config_recarregada.get("ats", "")
+        for campo, valor in {
+            "bash_list": config_recarregada.get("bash_list", ""),
+            "bash_v2": config_recarregada.get("bash_v2", ""),
+            "ats_am": config_recarregada.get("ats_am", ats_legado),
+            "ats_pm": config_recarregada.get("ats_pm", ""),
+            "database": config_recarregada.get("db_link", ""),
+        }.items():
+            st.session_state[_cfg_draft_key(hub, campo)] = valor
+            st.session_state[_cfg_ui_key(hub, campo)] = valor
         st.success(f"Configurações do {hub} recarregadas do Supabase.")
         time.sleep(0.5)
         st.rerun()
 
     garantir_config_form_hub(hub)
 
-    bash_list = st.text_area(
-        "Bash LIST / AUTH",
-        height=180,
-        key=f"cfg_bash_list_{hub}",
-        on_change=atualizar_config_hub_em_memoria,
-        args=(hub,)
-    )
-    bash_v2 = st.text_area(
-        "Bash V2",
-        height=240,
-        key=f"cfg_bash_v2_{hub}",
-        on_change=atualizar_config_hub_em_memoria,
-        args=(hub,)
-    )
+    bash_list = st.text_area("Bash LIST / AUTH", height=180, key=_cfg_ui_key(hub, "bash_list"), on_change=_copiar_ui_config_para_draft, args=(hub, "bash_list"))
+    bash_v2 = st.text_area("Bash V2", height=240, key=_cfg_ui_key(hub, "bash_v2"), on_change=_copiar_ui_config_para_draft, args=(hub, "bash_v2"))
 
     aba_ats_am, aba_ats_pm = st.tabs(["🌅 ATs AM", "🌆 ATs PM"])
     with aba_ats_am:
@@ -3041,27 +3192,19 @@ def render_configuracao_hub(hub):
             "ATs AM para buscar",
             height=170,
             placeholder="Cole as ATs do AM, uma por linha ou separadas por vírgula.",
-            key=f"cfg_ats_am_{hub}",
-            on_change=atualizar_config_hub_em_memoria,
-            args=(hub,)
+            key=_cfg_ui_key(hub, "ats_am"),
+            on_change=_copiar_ui_config_para_draft, args=(hub, "ats_am")
         )
     with aba_ats_pm:
         ats_pm_texto = st.text_area(
             "ATs PM para buscar",
             height=170,
             placeholder="Cole as ATs do PM, uma por linha ou separadas por vírgula.",
-            key=f"cfg_ats_pm_{hub}",
-            on_change=atualizar_config_hub_em_memoria,
-            args=(hub,)
+            key=_cfg_ui_key(hub, "ats_pm"),
+            on_change=_copiar_ui_config_para_draft, args=(hub, "ats_pm")
         )
 
-    link_database = st.text_input(
-        "Link da planilha Database do Hub",
-        placeholder="Cole o link da aba Database. Coluna B = Nome | Coluna I = Telefone",
-        key=f"cfg_database_{hub}",
-        on_change=atualizar_config_hub_em_memoria,
-        args=(hub,)
-    )
+    link_database = st.text_input("Link da planilha Database do Hub", placeholder="Cole o link da aba Database. Coluna B = Nome | Coluna I = Telefone", key=_cfg_ui_key(hub, "database"), on_change=_copiar_ui_config_para_draft, args=(hub, "database"))
 
     # Atualiza a cópia em memória em todo rerun. Assim, ao sair da aba Configuração,
     # os dados digitados continuam vivos e não somem na volta.
@@ -3310,6 +3453,9 @@ else:
     if st.session_state.get("_ultimo_hub_recarregado") != hub_atual:
         carregar_hub_supabase(hub_atual, atualizar_widgets=True)
         st.session_state["_ultimo_hub_recarregado"] = hub_atual
+
+    # Fechamento automático no fim do dia, sem interferir na navegação.
+    auto_salvar_fechamento_driver(hub_atual, limite_ofensor=95.0)
 
     render_header(
         titulo=f"Dashboard {hub_atual}",
