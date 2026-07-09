@@ -50,6 +50,7 @@ ROTAS_CACHE_PATH = BASE_DIR / "rotas_cache.pkl"
 USERS_PATH = BASE_DIR / "usuarios.json"
 PENDING_USERS_PATH = BASE_DIR / "cadastros_pendentes.json"
 SESSIONS_PATH = BASE_DIR / "sessoes.json"
+CONFIG_DRAFT_PATH = BASE_DIR / "config_draft_dia.json"
 
 HUBS = ["LPE-02", "LPE-03", "LPE-07", "LPE-11", "LPE-12"]
 FUSO_BRASIL = ZoneInfo("America/Recife")
@@ -82,6 +83,67 @@ def get_supabase():
 def config_default():
     # Mantém "ats" como legado para não perder configurações antigas já salvas.
     return {"bash_list": "", "bash_v2": "", "ats": "", "ats_am": "", "ats_pm": "", "db_link": ""}
+
+
+def _data_config_dia():
+    try:
+        return agora_brasil().strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
+
+
+def carregar_config_draft_dia():
+    """Carrega uma cópia local dos campos da Configuração válida apenas para o dia atual.
+    Isso evita que os campos sumam ao trocar de aba, mesmo quando o Streamlit remove
+    os widgets que não estão visíveis.
+    """
+    try:
+        if CONFIG_DRAFT_PATH.exists():
+            with open(CONFIG_DRAFT_PATH, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+            if isinstance(dados, dict) and dados.get("data") == _data_config_dia():
+                return dados.get("hubs", {}) if isinstance(dados.get("hubs"), dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def salvar_config_draft_dia(hub=None):
+    try:
+        hubs_cfg = carregar_config_draft_dia()
+        if hub in HUBS:
+            cfg = st.session_state.config_por_hub.get(hub, config_default())
+            hubs_cfg[hub] = {
+                "bash_list": cfg.get("bash_list", ""),
+                "bash_v2": cfg.get("bash_v2", ""),
+                "ats": cfg.get("ats", ""),
+                "ats_am": cfg.get("ats_am", cfg.get("ats", "")),
+                "ats_pm": cfg.get("ats_pm", ""),
+                "db_link": cfg.get("db_link", st.session_state.db_links_por_hub.get(hub, "")),
+            }
+        else:
+            for h in HUBS:
+                cfg = st.session_state.config_por_hub.get(h, config_default())
+                hubs_cfg[h] = {
+                    "bash_list": cfg.get("bash_list", ""),
+                    "bash_v2": cfg.get("bash_v2", ""),
+                    "ats": cfg.get("ats", ""),
+                    "ats_am": cfg.get("ats_am", cfg.get("ats", "")),
+                    "ats_pm": cfg.get("ats_pm", ""),
+                    "db_link": cfg.get("db_link", st.session_state.db_links_por_hub.get(h, "")),
+                }
+        tmp_path = CONFIG_DRAFT_PATH.with_suffix(".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump({"data": _data_config_dia(), "hubs": hubs_cfg}, f, ensure_ascii=False, indent=2)
+        tmp_path.replace(CONFIG_DRAFT_PATH)
+    except Exception as e:
+        safe_log(f"Erro ao salvar rascunho diário de configuração: {e}")
+
+
+def obter_config_draft_dia_hub(hub):
+    cfgs = carregar_config_draft_dia()
+    cfg = cfgs.get(hub, {}) if isinstance(cfgs, dict) else {}
+    return cfg if isinstance(cfg, dict) else {}
 
 
 def montar_dados_hub_para_salvar(hub):
@@ -208,6 +270,19 @@ def sincronizar_widgets_config_hub(hub):
         st.session_state[f"cfg_ats_am_{hub}"] = config.get("ats_am", ats_legado)
         st.session_state[f"cfg_ats_pm_{hub}"] = config.get("ats_pm", "")
         st.session_state[f"cfg_database_{hub}"] = db_link
+
+        # Também alimenta o draft permanente usado pela tela de Configuração.
+        for campo, valor in {
+            "bash_list": config.get("bash_list", ""),
+            "bash_v2": config.get("bash_v2", ""),
+            "ats_am": config.get("ats_am", ats_legado),
+            "ats_pm": config.get("ats_pm", ""),
+            "database": db_link,
+        }.items():
+            if str(valor or "").strip() or _cfg_draft_key(hub, campo) not in st.session_state:
+                st.session_state[_cfg_draft_key(hub, campo)] = valor
+        atualizar_config_hub_em_memoria(hub)
+        salvar_config_draft_dia(hub)
     except Exception as e:
         safe_log(f"Erro ao sincronizar campos do hub {hub}: {e}")
 
@@ -1046,7 +1121,10 @@ def salvar_estado_persistido(hub_para_salvar=None):
 
         hub_alvo = hub_para_salvar or st.session_state.get("hub")
         if hub_alvo in HUBS:
+            salvar_config_draft_dia(hub_alvo)
             salvar_hub_supabase(hub_alvo)
+        else:
+            salvar_config_draft_dia()
 
     except Exception as e:
         try:
@@ -3105,26 +3183,38 @@ def _cfg_ui_key(hub, campo):
 
 
 def garantir_config_form_hub(hub):
-    """Mantém uma cópia permanente dos campos, independente da aba estar renderizada."""
-    config = st.session_state.config_por_hub.get(hub, config_default())
-    ats_legado = config.get("ats", "")
+    """Mantém uma cópia permanente dos campos da Configuração.
+
+    Prioridade dos valores:
+    1) draft em session_state, quando já existe;
+    2) rascunho diário local, válido até virar o dia;
+    3) configuração salva em memória/Supabase.
+    """
+    config_salva = st.session_state.config_por_hub.get(hub, config_default())
+    config_dia = obter_config_draft_dia_hub(hub)
+
+    def escolher(campo, padrao=""):
+        if campo in config_dia and str(config_dia.get(campo, "")).strip():
+            return config_dia.get(campo, "")
+        return config_salva.get(campo, padrao)
+
+    ats_legado = escolher("ats", config_salva.get("ats", ""))
     valores = {
-        "bash_list": config.get("bash_list", ""),
-        "bash_v2": config.get("bash_v2", ""),
-        "ats_am": config.get("ats_am", ats_legado),
-        "ats_pm": config.get("ats_pm", ""),
-        "database": config.get("db_link", st.session_state.db_links_por_hub.get(hub, "")),
+        "bash_list": escolher("bash_list", ""),
+        "bash_v2": escolher("bash_v2", ""),
+        "ats_am": escolher("ats_am", ats_legado),
+        "ats_pm": escolher("ats_pm", ""),
+        "database": escolher("db_link", st.session_state.db_links_por_hub.get(hub, "")),
     }
+
     for campo, valor in valores.items():
         chave_draft = _cfg_draft_key(hub, campo)
         if chave_draft not in st.session_state:
             st.session_state[chave_draft] = valor
 
-        # A chave ui_* pertence ao widget e pode ser removida pelo Streamlit quando
-        # a aba deixa de ser renderizada. Sempre a recriamos a partir do draft.
         chave_ui = _cfg_ui_key(hub, campo)
         if chave_ui not in st.session_state:
-            st.session_state[chave_ui] = st.session_state[chave_draft]
+            st.session_state[chave_ui] = st.session_state.get(chave_draft, valor)
 
 
 def _copiar_ui_config_para_draft(hub, campo):
@@ -3133,14 +3223,20 @@ def _copiar_ui_config_para_draft(hub, campo):
     if chave_ui in st.session_state:
         st.session_state[chave_draft] = st.session_state.get(chave_ui, "")
     atualizar_config_hub_em_memoria(hub)
+    salvar_config_draft_dia(hub)
 
 
 def atualizar_config_hub_em_memoria(hub):
-    """Atualiza config_por_hub usando somente a cópia permanente (draft)."""
+    """Atualiza config_por_hub usando a cópia permanente.
+
+    Proteção importante: quando a aba Configuração não está renderizada, o Streamlit
+    pode limpar chaves dos widgets. Nesse caso, nunca substituímos uma configuração
+    preenchida por valores vazios.
+    """
     garantir_config_form_hub(hub)
     ats_am = st.session_state.get(_cfg_draft_key(hub, "ats_am"), "")
     ats_pm = st.session_state.get(_cfg_draft_key(hub, "ats_pm"), "")
-    config = {
+    novo = {
         "bash_list": st.session_state.get(_cfg_draft_key(hub, "bash_list"), ""),
         "bash_v2": st.session_state.get(_cfg_draft_key(hub, "bash_v2"), ""),
         "ats": "\n".join([ats_am, ats_pm]).strip(),
@@ -3148,18 +3244,37 @@ def atualizar_config_hub_em_memoria(hub):
         "ats_pm": ats_pm,
         "db_link": st.session_state.get(_cfg_draft_key(hub, "database"), ""),
     }
-    st.session_state.config_por_hub[hub] = config
-    st.session_state.db_links_por_hub[hub] = config["db_link"]
+
+    atual = st.session_state.config_por_hub.get(hub, config_default())
+    # Se por qualquer motivo o draft vier todo vazio, preserva o que já estava preenchido.
+    if not any(str(v or "").strip() for v in novo.values()) and any(str(v or "").strip() for v in atual.values()):
+        return
+
+    mesclado = dict(atual)
+    for k, v in novo.items():
+        # Não deixa uma limpeza acidental do widget apagar campo já preenchido.
+        if str(v or "").strip() or not str(mesclado.get(k, "")).strip():
+            mesclado[k] = v
+
+    st.session_state.config_por_hub[hub] = mesclado
+    st.session_state.db_links_por_hub[hub] = mesclado.get("db_link", "")
 
 
 def persistir_configs_digitadas_em_memoria():
-    """Copia widgets ainda visíveis para o draft antes de mudar de aba."""
+    """Copia widgets ainda visíveis para o draft antes de mudar de tela/aba."""
     for hub in HUBS:
         for campo in ["bash_list", "bash_v2", "ats_am", "ats_pm", "database"]:
             chave_ui = _cfg_ui_key(hub, campo)
             if chave_ui in st.session_state:
-                st.session_state[_cfg_draft_key(hub, campo)] = st.session_state[chave_ui]
+                valor_ui = st.session_state.get(chave_ui, "")
+                # Só copia vazio se o draft também estiver vazio. Isso evita que uma troca de aba
+                # apague algo já preenchido quando o widget deixa de existir.
+                chave_draft = _cfg_draft_key(hub, campo)
+                if str(valor_ui or "").strip() or not str(st.session_state.get(chave_draft, "")).strip():
+                    st.session_state[chave_draft] = valor_ui
         atualizar_config_hub_em_memoria(hub)
+    salvar_config_draft_dia()
+
 
 def render_configuracao_hub(hub):
     html(f'<div class="config-title">⚙️ Configuração Operacional - {hub}</div><div class="config-subtitle">Cole o Bash LIST, o Bash V2 e as ATs específicas deste hub.</div>')
@@ -3427,88 +3542,6 @@ def render_consolidado():
 
 persistir_configs_digitadas_em_memoria()
 
-
-# =========================================================
-# NAVEGAÇÃO DO HUB - BOTÕES ESTÁVEIS
-# =========================================================
-def _aba_hub_key(hub):
-    return f"aba_ativa_hub_{hub}"
-
-
-def _opcoes_abas_hub(hub):
-    return [
-        ("dashboard", f"📊 Dashboard {hub}"),
-        ("ranking", f"🏆 Ranking {hub}"),
-        ("inteligencia", f"📈 Inteligência {hub}"),
-        ("config", f"⚙️ Configuração {hub}"),
-    ]
-
-
-def navegar_para_aba_hub(hub, aba):
-    """Troca a tela interna do hub sem perder os dados digitados na Configuração."""
-    try:
-        persistir_configs_digitadas_em_memoria()
-    except Exception:
-        pass
-    st.session_state[_aba_hub_key(hub)] = aba
-    st.session_state.tela = "hub"
-    st.session_state.hub = hub
-    try:
-        token_atual = st.session_state.get("auth_token") or st.query_params.get("auth", "")
-        usuario_atual = st.session_state.get("usuario_login") or st.query_params.get("u", "")
-        st.query_params["tela"] = "hub"
-        st.query_params["hub"] = hub
-        st.query_params["aba"] = aba
-        st.query_params["theme"] = "dark" if st.session_state.get("tema_escuro", False) else "light"
-        if token_atual:
-            st.query_params["auth"] = token_atual
-        if usuario_atual:
-            st.query_params["u"] = usuario_atual
-    except Exception:
-        pass
-
-
-def render_nav_hub(hub):
-    """Menu visual antigo em botões. Renderiza apenas uma tela por vez."""
-    html("""
-    <style>
-    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button {
-        min-height: 48px !important;
-        border-radius: 14px !important;
-        font-weight: 900 !important;
-        border: 1px solid rgba(238,77,45,.55) !important;
-        transition: all .18s ease-in-out !important;
-    }
-    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button:hover {
-        transform: translateY(-2px) !important;
-        border-color: #ee4d2d !important;
-        box-shadow: 0 10px 24px rgba(238,77,45,.25) !important;
-    }
-    </style>
-    """)
-
-    opcoes = _opcoes_abas_hub(hub)
-    chave = _aba_hub_key(hub)
-    aba_url = st.query_params.get("aba", "")
-    if chave not in st.session_state:
-        st.session_state[chave] = aba_url if aba_url in [a for a, _ in opcoes] else "dashboard"
-    if st.session_state[chave] not in [a for a, _ in opcoes]:
-        st.session_state[chave] = "dashboard"
-
-    cols = st.columns(len(opcoes), gap="small")
-    for col, (aba, label) in zip(cols, opcoes):
-        ativo = st.session_state[chave] == aba
-        with col:
-            st.button(
-                label,
-                key=f"nav_hub_{hub}_{aba}",
-                use_container_width=True,
-                type="primary" if ativo else "secondary",
-                on_click=navegar_para_aba_hub,
-                args=(hub, aba),
-            )
-    return st.session_state[chave]
-
 # =========================================================
 # ROTEAMENTO FINAL
 # =========================================================
@@ -3531,9 +3564,7 @@ else:
         render_acesso_negado(hub_atual)
         st.stop()
 
-    # Recarrega do Supabase apenas ao entrar/trocar de hub.
-    # Não recarrega ao alternar Dashboard/Ranking/Inteligência/Configuração,
-    # para não sobrescrever campos digitados na Configuração.
+    # Recarrega do Supabase ao entrar/trocar de hub para buscar atualizações de outros analistas.
     if st.session_state.get("_ultimo_hub_recarregado") != hub_atual:
         carregar_hub_supabase(hub_atual, atualizar_widgets=True)
         st.session_state["_ultimo_hub_recarregado"] = hub_atual
@@ -3546,13 +3577,30 @@ else:
         subtitulo=f"Performance operacional em tempo real do hub {hub_atual}."
     )
 
-    aba_ativa = render_nav_hub(hub_atual)
+    opcoes_abas_hub = [
+        f"📊 Dashboard {hub_atual}",
+        f"🏆 Ranking {hub_atual}",
+        f"📈 Inteligência {hub_atual}",
+        f"⚙️ Configuração {hub_atual}"
+    ]
+    chave_aba_hub = f"aba_ativa_hub_{hub_atual}"
+    if chave_aba_hub not in st.session_state or st.session_state[chave_aba_hub] not in opcoes_abas_hub:
+        st.session_state[chave_aba_hub] = opcoes_abas_hub[0]
 
-    if aba_ativa == "dashboard":
+    aba_ativa = st.radio(
+        "Navegação do hub",
+        opcoes_abas_hub,
+        key=chave_aba_hub,
+        horizontal=True,
+        label_visibility="collapsed",
+        on_change=persistir_configs_digitadas_em_memoria
+    )
+
+    if aba_ativa.startswith("📊"):
         render_dashboard_hub(hub_atual)
-    elif aba_ativa == "ranking":
+    elif aba_ativa.startswith("🏆"):
         render_ranking_hub(hub_atual)
-    elif aba_ativa == "inteligencia":
+    elif aba_ativa.startswith("📈"):
         render_inteligencia_operacional(hub_atual)
-    elif aba_ativa == "config":
+    elif aba_ativa.startswith("⚙️"):
         render_configuracao_hub(hub_atual)
