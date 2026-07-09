@@ -3427,6 +3427,88 @@ def render_consolidado():
 
 persistir_configs_digitadas_em_memoria()
 
+
+# =========================================================
+# NAVEGAÇÃO DO HUB - BOTÕES ESTÁVEIS
+# =========================================================
+def _aba_hub_key(hub):
+    return f"aba_ativa_hub_{hub}"
+
+
+def _opcoes_abas_hub(hub):
+    return [
+        ("dashboard", f"📊 Dashboard {hub}"),
+        ("ranking", f"🏆 Ranking {hub}"),
+        ("inteligencia", f"📈 Inteligência {hub}"),
+        ("config", f"⚙️ Configuração {hub}"),
+    ]
+
+
+def navegar_para_aba_hub(hub, aba):
+    """Troca a tela interna do hub sem perder os dados digitados na Configuração."""
+    try:
+        persistir_configs_digitadas_em_memoria()
+    except Exception:
+        pass
+    st.session_state[_aba_hub_key(hub)] = aba
+    st.session_state.tela = "hub"
+    st.session_state.hub = hub
+    try:
+        token_atual = st.session_state.get("auth_token") or st.query_params.get("auth", "")
+        usuario_atual = st.session_state.get("usuario_login") or st.query_params.get("u", "")
+        st.query_params["tela"] = "hub"
+        st.query_params["hub"] = hub
+        st.query_params["aba"] = aba
+        st.query_params["theme"] = "dark" if st.session_state.get("tema_escuro", False) else "light"
+        if token_atual:
+            st.query_params["auth"] = token_atual
+        if usuario_atual:
+            st.query_params["u"] = usuario_atual
+    except Exception:
+        pass
+
+
+def render_nav_hub(hub):
+    """Menu visual antigo em botões. Renderiza apenas uma tela por vez."""
+    html("""
+    <style>
+    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button {
+        min-height: 48px !important;
+        border-radius: 14px !important;
+        font-weight: 900 !important;
+        border: 1px solid rgba(238,77,45,.55) !important;
+        transition: all .18s ease-in-out !important;
+    }
+    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button:hover {
+        transform: translateY(-2px) !important;
+        border-color: #ee4d2d !important;
+        box-shadow: 0 10px 24px rgba(238,77,45,.25) !important;
+    }
+    </style>
+    """)
+
+    opcoes = _opcoes_abas_hub(hub)
+    chave = _aba_hub_key(hub)
+    aba_url = st.query_params.get("aba", "")
+    if chave not in st.session_state:
+        st.session_state[chave] = aba_url if aba_url in [a for a, _ in opcoes] else "dashboard"
+    if st.session_state[chave] not in [a for a, _ in opcoes]:
+        st.session_state[chave] = "dashboard"
+
+    cols = st.columns(len(opcoes), gap="small")
+    for col, (aba, label) in zip(cols, opcoes):
+        ativo = st.session_state[chave] == aba
+        with col:
+            st.button(
+                label,
+                key=f"nav_hub_{hub}_{aba}",
+                use_container_width=True,
+                type="primary" if ativo else "secondary",
+                on_click=navegar_para_aba_hub,
+                args=(hub, aba),
+            )
+    return st.session_state[chave]
+
 # =========================================================
 # ROTEAMENTO FINAL
 # =========================================================
@@ -3449,7 +3531,9 @@ else:
         render_acesso_negado(hub_atual)
         st.stop()
 
-    # Recarrega do Supabase ao entrar/trocar de hub para buscar atualizações de outros analistas.
+    # Recarrega do Supabase apenas ao entrar/trocar de hub.
+    # Não recarrega ao alternar Dashboard/Ranking/Inteligência/Configuração,
+    # para não sobrescrever campos digitados na Configuração.
     if st.session_state.get("_ultimo_hub_recarregado") != hub_atual:
         carregar_hub_supabase(hub_atual, atualizar_widgets=True)
         st.session_state["_ultimo_hub_recarregado"] = hub_atual
@@ -3462,30 +3546,13 @@ else:
         subtitulo=f"Performance operacional em tempo real do hub {hub_atual}."
     )
 
-    opcoes_abas_hub = [
-        f"📊 Dashboard {hub_atual}",
-        f"🏆 Ranking {hub_atual}",
-        f"📈 Inteligência {hub_atual}",
-        f"⚙️ Configuração {hub_atual}"
-    ]
-    chave_aba_hub = f"aba_ativa_hub_{hub_atual}"
-    if chave_aba_hub not in st.session_state or st.session_state[chave_aba_hub] not in opcoes_abas_hub:
-        st.session_state[chave_aba_hub] = opcoes_abas_hub[0]
+    aba_ativa = render_nav_hub(hub_atual)
 
-    aba_ativa = st.radio(
-        "Navegação do hub",
-        opcoes_abas_hub,
-        key=chave_aba_hub,
-        horizontal=True,
-        label_visibility="collapsed",
-        on_change=persistir_configs_digitadas_em_memoria
-    )
-
-    if aba_ativa.startswith("📊"):
+    if aba_ativa == "dashboard":
         render_dashboard_hub(hub_atual)
-    elif aba_ativa.startswith("🏆"):
+    elif aba_ativa == "ranking":
         render_ranking_hub(hub_atual)
-    elif aba_ativa.startswith("📈"):
+    elif aba_ativa == "inteligencia":
         render_inteligencia_operacional(hub_atual)
-    elif aba_ativa.startswith("⚙️"):
+    elif aba_ativa == "config":
         render_configuracao_hub(hub_atual)
