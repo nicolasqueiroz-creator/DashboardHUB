@@ -2278,82 +2278,11 @@ def montar_indice_confiabilidade(df):
 
 
 
-def persistir_config_widgets_hub(hub):
-    """Preserva os campos de Configuração antes de sair da tela, sem depender da aba estar renderizada."""
-    try:
-        if hub not in HUBS:
-            return
-        atual = st.session_state.config_por_hub.get(hub, config_default()).copy()
-        bash_list = st.session_state.get(f"bash_list_{hub}", atual.get("bash_list", ""))
-        bash_v2 = st.session_state.get(f"bash_v2_{hub}", atual.get("bash_v2", ""))
-        ats_am = st.session_state.get(f"ats_am_{hub}", atual.get("ats_am", atual.get("ats", "")))
-        ats_pm = st.session_state.get(f"ats_pm_{hub}", atual.get("ats_pm", ""))
-        db_link = st.session_state.get(f"database_{hub}", atual.get("db_link", st.session_state.db_links_por_hub.get(hub, "")))
-        st.session_state.config_por_hub[hub] = {
-            "bash_list": bash_list,
-            "bash_v2": bash_v2,
-            "ats": "\n".join([ats_am, ats_pm]).strip(),
-            "ats_am": ats_am,
-            "ats_pm": ats_pm,
-            "db_link": db_link,
-        }
-        st.session_state.db_links_por_hub[hub] = db_link
-    except Exception as e:
-        safe_log(f"Erro ao preservar configuração do hub {hub}: {e}")
+# Fragmento isolado para impedir que interações na Inteligência
+# rerenderizem Dashboard, Ranking e Configuração.
+_fragmento_streamlit = getattr(st, "fragment", lambda func: func)
 
-
-def render_nav_hub_sem_radio(hub):
-    """Navegação visual estilo aba, sem st.radio e sem renderizar todas as telas ao mesmo tempo."""
-    chave = f"hub_subtela_{hub}"
-    if chave not in st.session_state:
-        st.session_state[chave] = "dashboard"
-
-    html("""
-    <style>
-    div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
-        border-radius: 999px !important;
-        border: 1px solid rgba(255,255,255,.20) !important;
-        background: transparent !important;
-        color: #ffffff !important;
-        font-weight: 900 !important;
-        min-height: 38px !important;
-        transition: .18s ease-in-out !important;
-    }
-    div[data-testid="stHorizontalBlock"] button[kind="secondary"]:hover {
-        background: rgba(255,90,0,.22) !important;
-        border-color: rgba(255,90,0,.80) !important;
-        color: #ff5a21 !important;
-        transform: translateY(-1px);
-    }
-    div[data-testid="stHorizontalBlock"] button[kind="primary"] {
-        border-radius: 999px !important;
-        background: linear-gradient(90deg,#ff5a00,#f0442d) !important;
-        color: #ffffff !important;
-        font-weight: 950 !important;
-        min-height: 38px !important;
-        border: 1px solid rgba(255,90,0,.95) !important;
-    }
-    </style>
-    """)
-
-    opcoes = [
-        ("dashboard", f"📊 Dashboard {hub}"),
-        ("ranking", f"🏆 Ranking {hub}"),
-        ("inteligencia", f"📈 Inteligência {hub}"),
-        ("config", f"⚙️ Configuração {hub}"),
-    ]
-
-    cols = st.columns(4)
-    for col, (valor, rotulo) in zip(cols, opcoes):
-        with col:
-            tipo = "primary" if st.session_state[chave] == valor else "secondary"
-            if st.button(rotulo, key=f"nav_{hub}_{valor}", type=tipo, use_container_width=True):
-                persistir_config_widgets_hub(hub)
-                st.session_state[chave] = valor
-                st.rerun()
-
-    return st.session_state[chave]
-
+@_fragmento_streamlit
 def render_inteligencia_operacional(hub):
     html(f'<div class="section-title">📈 Inteligência Operacional - {hub}</div>')
     st.caption("Base oficial de fechamento diário: reutilização semanal, reincidência de ofensores e índice de confiabilidade a partir dos fechamentos salvos.")
@@ -3498,13 +3427,21 @@ else:
         subtitulo=f"Performance operacional em tempo real do hub {hub_atual}."
     )
 
-    subtela_hub = render_nav_hub_sem_radio(hub_atual)
+    aba_dashboard, aba_ranking, aba_inteligencia, aba_config = st.tabs([
+        f"📊 Dashboard {hub_atual}",
+        f"🏆 Ranking {hub_atual}",
+        f"📈 Inteligência {hub_atual}",
+        f"⚙️ Configuração {hub_atual}"
+    ])
 
-    if subtela_hub == "dashboard":
+    with aba_dashboard:
         render_dashboard_hub(hub_atual)
-    elif subtela_hub == "ranking":
+
+    with aba_ranking:
         render_ranking_hub(hub_atual)
-    elif subtela_hub == "inteligencia":
+
+    with aba_inteligencia:
         render_inteligencia_operacional(hub_atual)
-    elif subtela_hub == "config":
+
+    with aba_config:
         render_configuracao_hub(hub_atual)
