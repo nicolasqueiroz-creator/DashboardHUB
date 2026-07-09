@@ -2332,28 +2332,47 @@ def render_nav_hub_unica(hub):
 
     html("""
     <style>
-    .hub-nav-spacer { margin: 2px 0 18px 0; }
-    div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
-        border-radius: 14px !important;
-        border: 1px solid rgba(255,255,255,.18) !important;
-        background: rgba(15,23,42,.55) !important;
-        color: #ffffff !important;
-        font-weight: 900 !important;
+    .hub-nav-spacer { margin: 4px 0 18px 0; }
+    div[data-testid="stHorizontalBlock"] button {
+        width: 100% !important;
         min-height: 46px !important;
-        box-shadow: none !important;
+        border-radius: 16px !important;
+        font-weight: 950 !important;
+        letter-spacing: .1px !important;
+        transition: all .18s ease-in-out !important;
+        box-shadow: 0 8px 22px rgba(0,0,0,.18) !important;
+        overflow: visible !important;
+        white-space: nowrap !important;
+    }
+    div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
+        background: rgba(15, 23, 42, .92) !important;
+        color: #ffffff !important;
+        border: 1px solid rgba(255,255,255,.22) !important;
+    }
+    div[data-testid="stHorizontalBlock"] button[kind="secondary"] * {
+        color: #ffffff !important;
+        opacity: 1 !important;
+        visibility: visible !important;
     }
     div[data-testid="stHorizontalBlock"] button[kind="secondary"]:hover {
-        background: rgba(255,90,0,.20) !important;
-        border-color: rgba(255,90,0,.85) !important;
-        color: #ff5a21 !important;
+        background: rgba(255,90,0,.24) !important;
+        border-color: rgba(255,90,0,.95) !important;
+        color: #ff7a3d !important;
+        transform: translateY(-1px);
+    }
+    div[data-testid="stHorizontalBlock"] button[kind="secondary"]:hover * {
+        color: #ff7a3d !important;
     }
     div[data-testid="stHorizontalBlock"] button[kind="primary"] {
-        border-radius: 14px !important;
         background: linear-gradient(90deg,#ff5a00,#f0442d) !important;
         color: #ffffff !important;
-        font-weight: 950 !important;
-        min-height: 46px !important;
         border: 1px solid rgba(255,90,0,.95) !important;
+        box-shadow: 0 10px 24px rgba(255,90,0,.25) !important;
+    }
+    div[data-testid="stHorizontalBlock"] button[kind="primary"] * {
+        color: #ffffff !important;
+        opacity: 1 !important;
+        visibility: visible !important;
     }
     </style>
     <div class="hub-nav-spacer"></div>
@@ -2428,10 +2447,10 @@ def render_inteligencia_operacional(hub):
 
     modulos_intel = [
         ("confiabilidade", "🧭 Confiabilidade"),
-        ("reuso", "🔁 Reutilização semanal"),
+        ("reuso", "🔁 Reutilização"),
         ("ofensores", "🔥 Ofensores"),
-        ("motorista", "👤 Histórico por motorista"),
-        ("base", "📄 Base completa"),
+        ("motorista", "👤 Motorista"),
+        ("base", "📄 Base"),
     ]
 
     cols_modulos = st.columns(5)
@@ -2578,7 +2597,12 @@ def render_inteligencia_operacional(hub):
         motorista_sel = st.selectbox("Selecione o motorista", motoristas, key=f"hist_motorista_{hub}")
         detalhe = df[df["motorista"] == motorista_sel].sort_values("data", ascending=False)
         if not detalhe.empty:
-            rotas = detalhe["at"].nunique()
+            # Garante que a ficha mostre a mesma quantidade de rotas que aparece na tabela.
+            # Remove duplicidades exatas do mesmo fechamento e depois conta as linhas exibidas.
+            chaves_detalhe = [c for c in ["data", "hub", "at", "driver_id"] if c in detalhe.columns]
+            if chaves_detalhe:
+                detalhe = detalhe.drop_duplicates(subset=chaves_detalhe, keep="last")
+            rotas = len(detalhe)
             volume = int(detalhe["volume"].sum())
             media = float(detalhe["performance"].mean())
             ofens = int(detalhe["ofensora"].sum())
