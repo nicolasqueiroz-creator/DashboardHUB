@@ -2188,17 +2188,13 @@ def preparar_df_historico(hub, dias):
     if "nao_coletada" in df.columns:
         df["nao_coletada"] = df["nao_coletada"].fillna(False).astype(bool)
 
-    # Proteção contra duplicidade histórica:
-    # uma mesma AT pode ter sido salva em mais de um fechamento/data.
-    # Para análise operacional, a rota deve contar uma única vez.
-    # Mantém o registro mais recente por Hub + AT.
+    # Correção da Inteligência:
+    # se a mesma AT foi salva mais de uma vez no histórico, mantém só a mais recente.
     try:
         if "atualizado_em" in df.columns:
             df["_ordem_atualizacao"] = pd.to_datetime(df["atualizado_em"], errors="coerce")
         elif "fechado_em" in df.columns:
             df["_ordem_atualizacao"] = pd.to_datetime(df["fechado_em"], errors="coerce")
-        elif "data" in df.columns:
-            df["_ordem_atualizacao"] = pd.to_datetime(df["data"], errors="coerce")
         else:
             df["_ordem_atualizacao"] = pd.Timestamp.min
 
@@ -2303,101 +2299,8 @@ def montar_indice_confiabilidade(df):
 
 
 
-def persistir_config_widgets_hub(hub):
-    """Preserva os campos de Configuração antes de trocar de tela."""
-    try:
-        if hub not in HUBS:
-            return
-        atual = st.session_state.config_por_hub.get(hub, config_default()).copy()
-        bash_list = st.session_state.get(f"bash_list_{hub}", atual.get("bash_list", ""))
-        bash_v2 = st.session_state.get(f"bash_v2_{hub}", atual.get("bash_v2", ""))
-        ats_am = st.session_state.get(f"ats_am_{hub}", atual.get("ats_am", atual.get("ats", "")))
-        ats_pm = st.session_state.get(f"ats_pm_{hub}", atual.get("ats_pm", ""))
-        db_link = st.session_state.get(f"database_{hub}", atual.get("db_link", st.session_state.db_links_por_hub.get(hub, "")))
-        st.session_state.config_por_hub[hub] = {
-            "bash_list": bash_list,
-            "bash_v2": bash_v2,
-            "ats": "\n".join([ats_am, ats_pm]).strip(),
-            "ats_am": ats_am,
-            "ats_pm": ats_pm,
-            "db_link": db_link,
-        }
-        st.session_state.db_links_por_hub[hub] = db_link
-    except Exception as e:
-        safe_log(f"Erro ao preservar configuração do hub {hub}: {e}")
 
 
-def render_nav_hub_unica(hub):
-    """Navegação principal sem st.tabs/st.radio: só uma tela é renderizada por vez."""
-    chave = f"hub_subtela_{hub}"
-    if chave not in st.session_state:
-        st.session_state[chave] = "dashboard"
-
-    html("""
-    <style>
-    .hub-nav-spacer { margin: 4px 0 18px 0; }
-    div[data-testid="stHorizontalBlock"] button {
-        width: 100% !important;
-        min-height: 46px !important;
-        border-radius: 16px !important;
-        font-weight: 950 !important;
-        letter-spacing: .1px !important;
-        transition: all .18s ease-in-out !important;
-        box-shadow: 0 8px 22px rgba(0,0,0,.18) !important;
-        overflow: visible !important;
-        white-space: nowrap !important;
-    }
-    div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
-        background: rgba(15, 23, 42, .92) !important;
-        color: #ffffff !important;
-        border: 1px solid rgba(255,255,255,.22) !important;
-    }
-    div[data-testid="stHorizontalBlock"] button[kind="secondary"] * {
-        color: #ffffff !important;
-        opacity: 1 !important;
-        visibility: visible !important;
-    }
-    div[data-testid="stHorizontalBlock"] button[kind="secondary"]:hover {
-        background: rgba(255,90,0,.24) !important;
-        border-color: rgba(255,90,0,.95) !important;
-        color: #ff7a3d !important;
-        transform: translateY(-1px);
-    }
-    div[data-testid="stHorizontalBlock"] button[kind="secondary"]:hover * {
-        color: #ff7a3d !important;
-    }
-    div[data-testid="stHorizontalBlock"] button[kind="primary"] {
-        background: linear-gradient(90deg,#ff5a00,#f0442d) !important;
-        color: #ffffff !important;
-        border: 1px solid rgba(255,90,0,.95) !important;
-        box-shadow: 0 10px 24px rgba(255,90,0,.25) !important;
-    }
-    div[data-testid="stHorizontalBlock"] button[kind="primary"] * {
-        color: #ffffff !important;
-        opacity: 1 !important;
-        visibility: visible !important;
-    }
-    </style>
-    <div class="hub-nav-spacer"></div>
-    """)
-
-    opcoes = [
-        ("dashboard", f"📊 Dashboard {hub}"),
-        ("ranking", f"🏆 Ranking {hub}"),
-        ("inteligencia", f"📈 Inteligência {hub}"),
-        ("config", f"⚙️ Configuração {hub}"),
-    ]
-
-    cols = st.columns(4)
-    for col, (valor, rotulo) in zip(cols, opcoes):
-        with col:
-            tipo = "primary" if st.session_state[chave] == valor else "secondary"
-            if st.button(rotulo, key=f"nav_{hub}_{valor}", type=tipo, use_container_width=True):
-                persistir_config_widgets_hub(hub)
-                st.session_state[chave] = valor
-                st.rerun()
-
-    return st.session_state[chave]
 
 def render_inteligencia_operacional(hub):
     html(f'<div class="section-title">📈 Inteligência Operacional - {hub}</div>')
@@ -2600,13 +2503,21 @@ def render_inteligencia_operacional(hub):
         motorista_sel = st.selectbox("Selecione o motorista", motoristas, key=f"hist_motorista_{hub}")
         detalhe = df[df["motorista"] == motorista_sel].sort_values("data", ascending=False)
         if not detalhe.empty:
-            # Garante que a ficha conte a AT apenas uma vez.
-            # Se a mesma AT aparecer em mais de uma data/fechamento, mantém só o registro mais recente.
+            # Garante que a ficha não conte a mesma AT duas vezes.
+            # Primeiro remove duplicidade exata do mesmo fechamento.
+            chaves_detalhe = [c for c in ["data", "hub", "at", "driver_id"] if c in detalhe.columns]
+            if chaves_detalhe:
+                detalhe = detalhe.drop_duplicates(subset=chaves_detalhe, keep="last")
+
+            # Depois remove AT repetida do mesmo motorista em datas diferentes,
+            # mantendo sempre o registro mais recente. Isso evita marcar ofensor
+            # por uma AT antiga duplicada no histórico.
             if "at" in detalhe.columns:
                 if "data" in detalhe.columns:
-                    detalhe = detalhe.sort_values("data").drop_duplicates(subset=["at"], keep="last")
-                else:
-                    detalhe = detalhe.drop_duplicates(subset=["at"], keep="last")
+                    detalhe = detalhe.sort_values("data", ascending=True)
+                detalhe = detalhe.drop_duplicates(subset=["at"], keep="last")
+                detalhe = detalhe.sort_values("data", ascending=False) if "data" in detalhe.columns else detalhe
+
             rotas = len(detalhe)
             volume = int(detalhe["volume"].sum())
             media = float(detalhe["performance"].mean())
@@ -3570,13 +3481,21 @@ else:
         subtitulo=f"Performance operacional em tempo real do hub {hub_atual}."
     )
 
-    subtela_hub = render_nav_hub_unica(hub_atual)
+    aba_dashboard, aba_ranking, aba_inteligencia, aba_config = st.tabs([
+        f"📊 Dashboard {hub_atual}",
+        f"🏆 Ranking {hub_atual}",
+        f"📈 Inteligência {hub_atual}",
+        f"⚙️ Configuração {hub_atual}"
+    ])
 
-    if subtela_hub == "dashboard":
+    with aba_dashboard:
         render_dashboard_hub(hub_atual)
-    elif subtela_hub == "ranking":
+
+    with aba_ranking:
         render_ranking_hub(hub_atual)
-    elif subtela_hub == "inteligencia":
+
+    with aba_inteligencia:
         render_inteligencia_operacional(hub_atual)
-    elif subtela_hub == "config":
+
+    with aba_config:
         render_configuracao_hub(hub_atual)
