@@ -2189,17 +2189,20 @@ def preparar_df_historico(hub, dias):
         df["nao_coletada"] = df["nao_coletada"].fillna(False).astype(bool)
 
     # Proteção contra duplicidade histórica:
-    # se o fechamento for salvo mais de uma vez, mantém só o registro mais recente
-    # para a mesma data/hub/AT. Isso evita contar a mesma rota duas vezes.
+    # uma mesma AT pode ter sido salva em mais de um fechamento/data.
+    # Para análise operacional, a rota deve contar uma única vez.
+    # Mantém o registro mais recente por Hub + AT.
     try:
         if "atualizado_em" in df.columns:
             df["_ordem_atualizacao"] = pd.to_datetime(df["atualizado_em"], errors="coerce")
         elif "fechado_em" in df.columns:
             df["_ordem_atualizacao"] = pd.to_datetime(df["fechado_em"], errors="coerce")
+        elif "data" in df.columns:
+            df["_ordem_atualizacao"] = pd.to_datetime(df["data"], errors="coerce")
         else:
             df["_ordem_atualizacao"] = pd.Timestamp.min
 
-        chaves_dedup = [c for c in ["data", "hub", "at"] if c in df.columns]
+        chaves_dedup = [c for c in ["hub", "at"] if c in df.columns]
         if chaves_dedup:
             df = (
                 df.sort_values("_ordem_atualizacao")
@@ -2597,11 +2600,13 @@ def render_inteligencia_operacional(hub):
         motorista_sel = st.selectbox("Selecione o motorista", motoristas, key=f"hist_motorista_{hub}")
         detalhe = df[df["motorista"] == motorista_sel].sort_values("data", ascending=False)
         if not detalhe.empty:
-            # Garante que a ficha mostre a mesma quantidade de rotas que aparece na tabela.
-            # Remove duplicidades exatas do mesmo fechamento e depois conta as linhas exibidas.
-            chaves_detalhe = [c for c in ["data", "hub", "at", "driver_id"] if c in detalhe.columns]
-            if chaves_detalhe:
-                detalhe = detalhe.drop_duplicates(subset=chaves_detalhe, keep="last")
+            # Garante que a ficha conte a AT apenas uma vez.
+            # Se a mesma AT aparecer em mais de uma data/fechamento, mantém só o registro mais recente.
+            if "at" in detalhe.columns:
+                if "data" in detalhe.columns:
+                    detalhe = detalhe.sort_values("data").drop_duplicates(subset=["at"], keep="last")
+                else:
+                    detalhe = detalhe.drop_duplicates(subset=["at"], keep="last")
             rotas = len(detalhe)
             volume = int(detalhe["volume"].sum())
             media = float(detalhe["performance"].mean())
