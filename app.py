@@ -2277,12 +2277,6 @@ def montar_indice_confiabilidade(df):
     return agrupado
 
 
-
-# Fragmento isolado para impedir que interações na Inteligência
-# rerenderizem Dashboard, Ranking e Configuração.
-_fragmento_streamlit = getattr(st, "fragment", lambda func: func)
-
-@_fragmento_streamlit
 def render_inteligencia_operacional(hub):
     html(f'<div class="section-title">📈 Inteligência Operacional - {hub}</div>')
     st.caption("Base oficial de fechamento diário: reutilização semanal, reincidência de ofensores e índice de confiabilidade a partir dos fechamentos salvos.")
@@ -2326,16 +2320,36 @@ def render_inteligencia_operacional(hub):
     c3.metric("Vezes ofensor", f"{total_ofensoras:,}".replace(",", "."))
     c4.metric("Performance média", f"{perf_media:.1f}%")
 
-    tab_confiabilidade, tab_reuso, tab_ofensores, tab_motorista, tab_base = st.tabs([
-        "🧭 Confiabilidade",
-        "🔁 Reutilização semanal",
-        "🔥 Ofensores",
-        "👤 Histórico por motorista",
-        "📄 Base completa"
-    ])
+    # Navegação interna da Inteligência:
+    # renderiza somente um módulo por vez para impedir o empilhamento após interações.
+    chave_modulo_intel = f"modulo_inteligencia_{hub}"
+    if chave_modulo_intel not in st.session_state:
+        st.session_state[chave_modulo_intel] = "confiabilidade"
 
+    modulos_intel = [
+        ("confiabilidade", "🧭 Confiabilidade"),
+        ("reuso", "🔁 Reutilização semanal"),
+        ("ofensores", "🔥 Ofensores"),
+        ("motorista", "👤 Histórico por motorista"),
+        ("base", "📄 Base completa"),
+    ]
 
-    with tab_confiabilidade:
+    cols_modulos = st.columns(5)
+    for col_modulo, (valor_modulo, rotulo_modulo) in zip(cols_modulos, modulos_intel):
+        with col_modulo:
+            tipo_botao = "primary" if st.session_state[chave_modulo_intel] == valor_modulo else "secondary"
+            if st.button(
+                rotulo_modulo,
+                key=f"btn_inteligencia_{hub}_{valor_modulo}",
+                type=tipo_botao,
+                use_container_width=True
+            ):
+                st.session_state[chave_modulo_intel] = valor_modulo
+                st.rerun()
+
+    modulo_intel_ativo = st.session_state[chave_modulo_intel]
+
+    if modulo_intel_ativo == "confiabilidade":
         html('<div class="section-title">🧭 Índice de Confiabilidade</div>')
         st.caption("Nota calculada com base em performance média, reincidência como ofensor, pendentes, On Hold e consistência no período selecionado.")
         indice = montar_indice_confiabilidade(df)
@@ -2388,7 +2402,7 @@ def render_inteligencia_operacional(hub):
                 type="primary"
             )
 
-    with tab_reuso:
+    elif modulo_intel_ativo == "reuso":
         html('<div class="section-title">🔁 Motoristas reutilizados na semana</div>')
         df_reuso = df.copy()
         if "driver_id" not in df_reuso.columns:
@@ -2423,7 +2437,7 @@ def render_inteligencia_operacional(hub):
             type="primary"
         )
 
-    with tab_ofensores:
+    elif modulo_intel_ativo == "ofensores":
         html('<div class="section-title">🔥 Histórico de ofensores</div>')
         df_of = df[df["ofensora"]].copy()
         if df_of.empty:
@@ -2458,7 +2472,7 @@ def render_inteligencia_operacional(hub):
                 por_mes["performance_media"] = por_mes["performance_media"].round(1)
                 st.dataframe(por_mes.rename(columns={"ano":"Ano", "mes":"Mês", "driver_id":"Driver ID", "motorista":"Motorista", "vezes_ofensor":"Vezes ofensor", "performance_media":"Performance média"}), use_container_width=True, hide_index=True)
 
-    with tab_motorista:
+    elif modulo_intel_ativo == "motorista":
         html('<div class="section-title">👤 Ficha do motorista</div>')
         motoristas = sorted(df["motorista"].dropna().unique().tolist())
         motorista_sel = st.selectbox("Selecione o motorista", motoristas, key=f"hist_motorista_{hub}")
@@ -2488,7 +2502,7 @@ def render_inteligencia_operacional(hub):
                 "entregues":"Entregues", "on_hold":"On Hold", "pendentes":"Pendentes", "performance":"Performance", "ofensora":"Ofensor"
             }), use_container_width=True, hide_index=True)
 
-    with tab_base:
+    elif modulo_intel_ativo == "base":
         html('<div class="section-title">📄 Base histórica completa</div>')
         cols = ["data", "hub", "janela", "driver_id", "motorista", "at", "gaiola", "cluster", "modalidade", "volume", "entregues", "on_hold", "pendentes", "performance", "ofensora", "nao_coletada"]
         cols = [c for c in cols if c in df.columns]
