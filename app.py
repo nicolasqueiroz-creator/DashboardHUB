@@ -1042,10 +1042,7 @@ def salvar_estado_persistido(hub_para_salvar=None):
 
         hub_alvo = hub_para_salvar or st.session_state.get("hub")
         if hub_alvo in HUBS:
-            salvar_config_draft_dia(hub_alvo)
             salvar_hub_supabase(hub_alvo)
-        else:
-            salvar_config_draft_dia()
 
     except Exception as e:
         try:
@@ -3095,106 +3092,16 @@ def render_dashboard_hub(hub):
 
 
 
-def _cfg_draft_key(hub, campo):
-    return f"draft_cfg_{campo}_{hub}"
 
 
-def _cfg_ui_key(hub, campo):
-    return f"ui_cfg_{campo}_{hub}"
 
 
-def garantir_config_form_hub(hub):
-    """Mantém uma cópia permanente dos campos da Configuração.
-
-    Prioridade dos valores:
-    1) draft em session_state, quando já existe;
-    2) rascunho diário local, válido até virar o dia;
-    3) configuração salva em memória/Supabase.
-    """
-    config_salva = st.session_state.config_por_hub.get(hub, config_default())
-    config_dia = obter_config_draft_dia_hub(hub)
-
-    def escolher(campo, padrao=""):
-        if campo in config_dia and str(config_dia.get(campo, "")).strip():
-            return config_dia.get(campo, "")
-        return config_salva.get(campo, padrao)
-
-    ats_legado = escolher("ats", config_salva.get("ats", ""))
-    valores = {
-        "bash_list": escolher("bash_list", ""),
-        "bash_v2": escolher("bash_v2", ""),
-        "ats_am": escolher("ats_am", ats_legado),
-        "ats_pm": escolher("ats_pm", ""),
-        "database": escolher("db_link", st.session_state.db_links_por_hub.get(hub, "")),
-    }
-
-    for campo, valor in valores.items():
-        chave_draft = _cfg_draft_key(hub, campo)
-        if chave_draft not in st.session_state:
-            st.session_state[chave_draft] = valor
-
-        chave_ui = _cfg_ui_key(hub, campo)
-        if chave_ui not in st.session_state:
-            st.session_state[chave_ui] = st.session_state.get(chave_draft, valor)
 
 
-def _copiar_ui_config_para_draft(hub, campo):
-    chave_ui = _cfg_ui_key(hub, campo)
-    chave_draft = _cfg_draft_key(hub, campo)
-    if chave_ui in st.session_state:
-        st.session_state[chave_draft] = st.session_state.get(chave_ui, "")
-    atualizar_config_hub_em_memoria(hub)
-    salvar_config_draft_dia(hub)
 
 
-def atualizar_config_hub_em_memoria(hub):
-    """Atualiza config_por_hub usando a cópia permanente.
-
-    Proteção importante: quando a aba Configuração não está renderizada, o Streamlit
-    pode limpar chaves dos widgets. Nesse caso, nunca substituímos uma configuração
-    preenchida por valores vazios.
-    """
-    garantir_config_form_hub(hub)
-    ats_am = st.session_state.get(_cfg_draft_key(hub, "ats_am"), "")
-    ats_pm = st.session_state.get(_cfg_draft_key(hub, "ats_pm"), "")
-    novo = {
-        "bash_list": st.session_state.get(_cfg_draft_key(hub, "bash_list"), ""),
-        "bash_v2": st.session_state.get(_cfg_draft_key(hub, "bash_v2"), ""),
-        "ats": "\n".join([ats_am, ats_pm]).strip(),
-        "ats_am": ats_am,
-        "ats_pm": ats_pm,
-        "db_link": st.session_state.get(_cfg_draft_key(hub, "database"), ""),
-    }
-
-    atual = st.session_state.config_por_hub.get(hub, config_default())
-    # Se por qualquer motivo o draft vier todo vazio, preserva o que já estava preenchido.
-    if not any(str(v or "").strip() for v in novo.values()) and any(str(v or "").strip() for v in atual.values()):
-        return
-
-    mesclado = dict(atual)
-    for k, v in novo.items():
-        # Não deixa uma limpeza acidental do widget apagar campo já preenchido.
-        if str(v or "").strip() or not str(mesclado.get(k, "")).strip():
-            mesclado[k] = v
-
-    st.session_state.config_por_hub[hub] = mesclado
-    st.session_state.db_links_por_hub[hub] = mesclado.get("db_link", "")
 
 
-def persistir_configs_digitadas_em_memoria():
-    """Copia widgets ainda visíveis para o draft antes de mudar de tela/aba."""
-    for hub in HUBS:
-        for campo in ["bash_list", "bash_v2", "ats_am", "ats_pm", "database"]:
-            chave_ui = _cfg_ui_key(hub, campo)
-            if chave_ui in st.session_state:
-                valor_ui = st.session_state.get(chave_ui, "")
-                # Só copia vazio se o draft também estiver vazio. Isso evita que uma troca de aba
-                # apague algo já preenchido quando o widget deixa de existir.
-                chave_draft = _cfg_draft_key(hub, campo)
-                if str(valor_ui or "").strip() or not str(st.session_state.get(chave_draft, "")).strip():
-                    st.session_state[chave_draft] = valor_ui
-        atualizar_config_hub_em_memoria(hub)
-    salvar_config_draft_dia()
 
 
 def render_configuracao_hub(hub):
@@ -3478,7 +3385,6 @@ def render_consolidado():
     render_card_meta("PM", resultado["PM"], "meta-pm-fill")
     render_card_meta("Consolidado", resultado["Consolidado"], "meta-consolidado-fill")
 
-persistir_configs_digitadas_em_memoria()
 
 # =========================================================
 # ROTEAMENTO FINAL
@@ -3530,8 +3436,7 @@ else:
         opcoes_abas_hub,
         key=chave_aba_hub,
         horizontal=True,
-        label_visibility="collapsed",
-        on_change=persistir_configs_digitadas_em_memoria
+        label_visibility="collapsed"
     )
 
     if aba_ativa.startswith("📊"):
