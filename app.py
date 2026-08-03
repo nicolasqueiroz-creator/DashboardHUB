@@ -3208,15 +3208,12 @@ def render_configuracao_hub(hub):
             key=f"ats_pm_{hub}"
         )
 
-    link_database = st.text_input("Link da planilha Database do Hub", placeholder="Cole o link da aba Database. Coluna B = Nome | Coluna I = Telefone", key=f"database_{hub}")
-
     st.session_state.config_por_hub[hub] = {
         "bash_list": bash_list,
         "bash_v2": bash_v2,
         "ats": "\n".join([ats_am_texto, ats_pm_texto]).strip(),
         "ats_am": ats_am_texto,
         "ats_pm": ats_pm_texto,
-        "db_link": link_database,
     }
     st.session_state.db_links_por_hub[hub] = link_database
 
