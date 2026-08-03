@@ -1,5 +1,5 @@
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from urllib.parse import urlparse, quote
@@ -80,8 +80,24 @@ def get_supabase():
 
 
 def config_default():
-    # Mantém "ats" como legado para não perder configurações antigas já salvas.
-    return {"bash_list": "", "bash_v2": "", "ats": "", "ats_am": "", "ats_pm": "", "db_link": ""}
+    # Mantém "ats" e "db_link" por compatibilidade com versões antigas.
+    return {
+        "bash_list": "",
+        "bash_v2": "",
+        "ats": "",
+        "ats_am": "",
+        "ats_pm": "",
+        "db_link": "",
+        "auto_update_enabled": False,
+        "auto_update_minutes": 60,
+        "auto_next_at": "",
+        "auto_last_attempt": "",
+        "auto_last_status": "",
+        "auto_last_error": "",
+        "auto_last_duration": 0.0,
+        "auto_last_type": "",
+        "auto_history": [],
+    }
 
 
 
@@ -115,10 +131,19 @@ def aplicar_dados_hub_carregados(hub, dados):
             "ats": ats_legado,
             "ats_am": config.get("ats_am", atual.get("ats_am", ats_legado)),
             "ats_pm": config.get("ats_pm", atual.get("ats_pm", "")),
-            "db_link": config.get("db_link", atual.get("db_link", "")),
+            "db_link": "",
+            "auto_update_enabled": bool(config.get("auto_update_enabled", atual.get("auto_update_enabled", False))),
+            "auto_update_minutes": int(config.get("auto_update_minutes", atual.get("auto_update_minutes", 60)) or 60),
+            "auto_next_at": config.get("auto_next_at", atual.get("auto_next_at", "")),
+            "auto_last_attempt": config.get("auto_last_attempt", atual.get("auto_last_attempt", "")),
+            "auto_last_status": config.get("auto_last_status", atual.get("auto_last_status", "")),
+            "auto_last_error": config.get("auto_last_error", atual.get("auto_last_error", "")),
+            "auto_last_duration": float(config.get("auto_last_duration", atual.get("auto_last_duration", 0.0)) or 0.0),
+            "auto_last_type": config.get("auto_last_type", atual.get("auto_last_type", "")),
+            "auto_history": config.get("auto_history", atual.get("auto_history", [])) or [],
         })
         st.session_state.config_por_hub[hub] = atual
-        st.session_state.db_links_por_hub[hub] = atual.get("db_link", "")
+        st.session_state.db_links_por_hub[hub] = ""
 
     contatos = dados.get("__contatos", {})
     if isinstance(contatos, dict):
@@ -194,7 +219,7 @@ def carregar_supabase():
 
 
 def sincronizar_widgets_config_hub(hub):
-    """Atualiza os campos da aba Configuração com o que acabou de vir do Supabase."""
+    """Atualiza os campos da Configuração com o que veio do Supabase."""
     try:
         config = st.session_state.config_por_hub.get(hub, config_default())
         ats_legado = config.get("ats", "")
@@ -203,7 +228,8 @@ def sincronizar_widgets_config_hub(hub):
         st.session_state[f"ats_{hub}"] = ats_legado
         st.session_state[f"ats_am_{hub}"] = config.get("ats_am", ats_legado)
         st.session_state[f"ats_pm_{hub}"] = config.get("ats_pm", "")
-        st.session_state[f"database_{hub}"] = config.get("db_link", st.session_state.db_links_por_hub.get(hub, ""))
+        st.session_state[f"auto_update_enabled_{hub}"] = bool(config.get("auto_update_enabled", False))
+        st.session_state[f"auto_update_minutes_{hub}"] = int(config.get("auto_update_minutes", 60) or 60)
     except Exception as e:
         safe_log(f"Erro ao sincronizar campos do hub {hub}: {e}")
 
@@ -3176,6 +3202,8 @@ def render_dashboard_hub(hub):
     if st.button("← Voltar para Hubs", key=f"voltar_{hub}", type="primary"):
         voltar_home_botao()
     html(f'<div class="dashboard-box"><div style="display:flex;justify-content:space-between;align-items:center;"><div><span class="dashboard-hub">{hub}</span><span class="status" style="float:none;margin-left:18px;">Ativo</span></div><div class="last-update">Última atualização: {ultima_atualizacao_hub} 🔄</div></div></div>')
+    render_status_atualizacao_automatica(hub, compacto=True)
+    render_painel_saude_sistema(hub)
     volume = dados["Volume"]
     entregues = dados["Entregues"]
     pendentes = dados["Pendentes"]
@@ -3316,6 +3344,349 @@ def render_dashboard_hub(hub):
 
 
 
+
+def _parse_iso_brasil(valor):
+    try:
+        if not valor:
+            return None
+        dt = datetime.fromisoformat(str(valor))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=FUSO_BRASIL)
+        return dt.astimezone(FUSO_BRASIL)
+    except Exception:
+        return None
+
+
+def _formatar_duracao(segundos):
+    try:
+        segundos = max(float(segundos or 0), 0)
+    except Exception:
+        segundos = 0
+    minutos = int(segundos // 60)
+    resto = int(segundos % 60)
+    return f"{minutos}m {resto:02d}s" if minutos else f"{resto}s"
+
+
+def _registrar_execucao_atualizacao(hub, tipo, status, duracao, erro=""):
+    cfg = st.session_state.config_por_hub.get(hub, config_default()).copy()
+    agora = agora_brasil()
+    item = {
+        "horario": agora.isoformat(),
+        "tipo": tipo,
+        "status": status,
+        "duracao": round(float(duracao or 0), 2),
+        "erro": str(erro or "")[:400],
+    }
+    historico = list(cfg.get("auto_history", []) or [])
+    historico.insert(0, item)
+    cfg["auto_history"] = historico[:20]
+    cfg["auto_last_attempt"] = item["horario"]
+    cfg["auto_last_status"] = status
+    cfg["auto_last_error"] = item["erro"]
+    cfg["auto_last_duration"] = item["duracao"]
+    cfg["auto_last_type"] = tipo
+    st.session_state.config_por_hub[hub] = cfg
+
+
+def _agendar_proxima_atualizacao(hub, minutos=None, base=None):
+    cfg = st.session_state.config_por_hub.get(hub, config_default()).copy()
+    intervalo = int(minutos or cfg.get("auto_update_minutes", 60) or 60)
+    referencia = base or agora_brasil()
+    cfg["auto_next_at"] = (referencia + timedelta(minutes=intervalo)).isoformat()
+    st.session_state.config_por_hub[hub] = cfg
+    return cfg["auto_next_at"]
+
+
+def executar_atualizacao_hub(
+    hub,
+    tipo="Manual",
+    somente_v2=True,
+    arquivo_database=None,
+    exibir_mensagens=True,
+):
+    """Executa a mesma atualização do botão manual, podendo ser chamada automaticamente."""
+    chave_execucao = f"atualizacao_em_andamento_{hub}"
+    if st.session_state.get(chave_execucao, False):
+        if exibir_mensagens:
+            st.warning("⚠️ Já existe uma atualização em andamento para este hub.")
+        return False
+
+    cfg = st.session_state.config_por_hub.get(hub, config_default()).copy()
+    bash_list = str(cfg.get("bash_list", "") or "")
+    bash_v2 = str(cfg.get("bash_v2", "") or "")
+    ats_am_texto = str(cfg.get("ats_am", cfg.get("ats", "")) or "")
+    ats_pm_texto = str(cfg.get("ats_pm", "") or "")
+
+    inicio = time.time()
+    st.session_state[chave_execucao] = True
+    st.session_state[f"etapa_atualizacao_{hub}"] = "Preparando atualização"
+
+    barra = st.progress(0) if exibir_mensagens else None
+    status_box = st.empty() if exibir_mensagens else None
+
+    def etapa(percentual, mensagem):
+        st.session_state[f"etapa_atualizacao_{hub}"] = mensagem
+        if barra is not None:
+            barra.progress(min(max(int(percentual), 0), 100))
+        if status_box is not None:
+            status_box.info(mensagem)
+
+    try:
+        st.session_state.terminal = []
+        etapa(5, f"🔄 {tipo}: preparando dados do {hub}")
+
+        if not bash_v2.strip():
+            raise ValueError("Bash V2 não configurado.")
+        if not bash_list.strip():
+            raise ValueError("Bash LIST/AUTH não configurado.")
+
+        ats_am = limpar_ats(ats_am_texto)
+        ats_pm = limpar_ats(ats_pm_texto)
+        ats = list(dict.fromkeys(ats_am + ats_pm))
+        if not ats:
+            raise ValueError("Nenhuma AT AM ou PM configurada.")
+
+        mapa_janelas = {at: "AM" for at in ats_am}
+        mapa_janelas.update({at: "PM" for at in ats_pm})
+        contatos_database = st.session_state.contatos_por_hub.get(hub, {}) or {}
+
+        if arquivo_database is not None:
+            etapa(12, "📂 Carregando Database de contatos")
+            contatos_database = carregar_database_arquivo(arquivo_database)
+            st.session_state.contatos_por_hub[hub] = contatos_database
+
+        etapa(20, "🔐 Validando LIST/AUTH")
+        try:
+            carregar_json_ou_curl(bash_list)
+        except Exception as e:
+            log(f"LIST/AUTH não validado previamente; tentativa continuará: {e}")
+
+        etapa(32, "🚚 Consultando rotas no V2")
+        lista_v2 = (
+            buscar_todas_paginas_v2(bash_v2)
+            if somente_v2
+            else carregar_json_ou_curl(bash_v2).get("data", {}).get("list", [])
+        )
+
+        etapa(48, "🧩 Cruzando ATs AM/PM com o V2")
+        mapa_v2 = processar_rotas_v2(lista_v2, ats, mapa_janelas=mapa_janelas)
+        if not mapa_v2:
+            raise ValueError("Nenhuma AT configurada foi encontrada no V2.")
+
+        etapa(58, "📦 Consultando pacotes por AT")
+        metricas_lote = buscar_metricas_em_lote(
+            bash_list,
+            mapa_v2,
+            max_workers=6
+        )
+
+        etapa(76, "📊 Calculando métricas operacionais")
+        for at, metricas in metricas_lote.items():
+            rota = mapa_v2[at]
+
+            if bool(rota.get("Rota Concluida V2", False)):
+                try:
+                    total_v2 = int(rota.get("Total V2") or 0)
+                except Exception:
+                    total_v2 = 0
+
+                total_final = total_v2 if total_v2 > 0 else int(metricas.get("Total") or 0)
+                rota["Total"] = total_final
+                rota["Entregues"] = total_final
+                rota["On Hold"] = 0
+                rota["Pendentes"] = 0
+                rota["Performance"] = 1 if total_final else 0
+                rota["Performance %"] = "100.0%" if total_final else "0.0%"
+            else:
+                rota["Total"] = metricas["Total"]
+                rota["Entregues"] = metricas["Entregues"]
+                rota["On Hold"] = metricas["On Hold"]
+                rota["Pendentes"] = metricas["Pendentes"]
+                rota["Performance"] = metricas["Performance"]
+                rota["Performance %"] = metricas["Performance %"]
+
+        etapa(86, "🏆 Atualizando Dashboard, Ranking e Inteligência")
+        rotas = criar_rotas_apenas_v2(mapa_v2)
+        rotas = aplicar_contatos_nas_rotas(rotas, contatos_database)
+        st.session_state.rotas_por_hub[hub] = rotas
+        atualizar_hub_com_rotas(hub, rotas)
+        salvar_historico_driver_supabase(hub, rotas, limite_ofensor=95.0)
+
+        etapa(94, "☁️ Salvando dados no Supabase")
+        duracao = time.time() - inicio
+        _registrar_execucao_atualizacao(hub, tipo, "Sucesso", duracao)
+        cfg_final = st.session_state.config_por_hub.get(hub, config_default()).copy()
+        if cfg_final.get("auto_update_enabled", False):
+            _agendar_proxima_atualizacao(
+                hub,
+                minutos=cfg_final.get("auto_update_minutes", 60),
+                base=agora_brasil()
+            )
+        salvar_estado_persistido(hub)
+
+        etapa(100, f"✅ {tipo} concluída em {_formatar_duracao(duracao)}")
+        if exibir_mensagens:
+            st.success(f"Atualização do {hub} finalizada com sucesso.")
+        return True
+
+    except Exception as e:
+        duracao = time.time() - inicio
+        erro = str(e)
+        _registrar_execucao_atualizacao(hub, tipo, "Falhou", duracao, erro)
+        cfg_final = st.session_state.config_por_hub.get(hub, config_default()).copy()
+        if cfg_final.get("auto_update_enabled", False):
+            _agendar_proxima_atualizacao(
+                hub,
+                minutos=cfg_final.get("auto_update_minutes", 60),
+                base=agora_brasil()
+            )
+        salvar_estado_persistido(hub)
+        log(f"ERRO: {erro}")
+        if status_box is not None:
+            status_box.error(f"❌ Atualização falhou: {erro}")
+        if exibir_mensagens:
+            st.error(f"Erro ao processar: {erro}")
+        return False
+
+    finally:
+        st.session_state[chave_execucao] = False
+
+
+def render_status_atualizacao_automatica(hub, compacto=False):
+    cfg = st.session_state.config_por_hub.get(hub, config_default())
+    ativa = bool(cfg.get("auto_update_enabled", False))
+    intervalo = int(cfg.get("auto_update_minutes", 60) or 60)
+    proxima = _parse_iso_brasil(cfg.get("auto_next_at", ""))
+    ultima = _parse_iso_brasil(cfg.get("auto_last_attempt", ""))
+    status = str(cfg.get("auto_last_status", "") or "")
+    erro = str(cfg.get("auto_last_error", "") or "")
+    duracao = float(cfg.get("auto_last_duration", 0) or 0)
+    tipo = str(cfg.get("auto_last_type", "") or "")
+
+    agora = agora_brasil()
+    if ativa and not proxima:
+        _agendar_proxima_atualizacao(hub, intervalo, agora)
+        proxima = _parse_iso_brasil(st.session_state.config_por_hub[hub].get("auto_next_at", ""))
+
+    if ativa and proxima:
+        restantes = max(int((proxima - agora).total_seconds()), 0)
+        horas, resto = divmod(restantes, 3600)
+        minutos, segundos = divmod(resto, 60)
+        faltam = f"{horas:02d}:{minutos:02d}:{segundos:02d}"
+        proxima_txt = proxima.strftime("%d/%m/%Y %H:%M")
+    else:
+        faltam = "--:--:--"
+        proxima_txt = "Desativada"
+
+    ultima_txt = ultima.strftime("%d/%m/%Y %H:%M:%S") if ultima else "Sem execução registrada"
+    cor = "#22c55e" if status == "Sucesso" else ("#ef4444" if status == "Falhou" else "#f59e0b")
+    icone = "🟢" if ativa else "⚪"
+
+    html(f"""
+    <div style="border:1px solid rgba(255,255,255,.15);border-radius:16px;padding:14px 18px;
+                background:rgba(15,23,42,.50);margin:8px 0 14px 0;">
+      <div style="display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:center;">
+        <div><b>{icone} Atualização automática: {'ATIVA' if ativa else 'DESATIVADA'}</b>
+             <div style="opacity:.8;font-size:13px;">Intervalo: {intervalo} minutos</div></div>
+        <div><b>⏳ Próxima atualização</b>
+             <div style="font-size:20px;font-weight:900;">{faltam}</div>
+             <div style="opacity:.75;font-size:12px;">{proxima_txt}</div></div>
+        <div><b>Última execução</b>
+             <div style="color:{cor};font-weight:900;">{status or 'Sem registro'}</div>
+             <div style="opacity:.75;font-size:12px;">{ultima_txt} · {tipo or '-'} · {_formatar_duracao(duracao)}</div></div>
+      </div>
+      {f'<div style="margin-top:10px;color:#fca5a5;"><b>Motivo:</b> {erro}</div>' if erro else ''}
+    </div>
+    """)
+
+
+def render_painel_saude_sistema(hub):
+    if not usuario_logado_eh_gestao():
+        return
+
+    cfg = st.session_state.config_por_hub.get(hub, config_default())
+    historico = list(cfg.get("auto_history", []) or [])
+    hoje = agora_brasil().date()
+    historico_hoje = []
+    for item in historico:
+        dt = _parse_iso_brasil(item.get("horario", ""))
+        if dt and dt.date() == hoje:
+            historico_hoje.append(item)
+
+    sucessos = sum(1 for i in historico_hoje if i.get("status") == "Sucesso")
+    falhas = sum(1 for i in historico_hoje if i.get("status") == "Falhou")
+    duracoes = [float(i.get("duracao", 0) or 0) for i in historico_hoje if i.get("status") == "Sucesso"]
+    media = sum(duracoes) / len(duracoes) if duracoes else 0
+    sb_ok = bool(get_supabase())
+    list_ok = bool(str(cfg.get("bash_list", "") or "").strip())
+    v2_ok = bool(str(cfg.get("bash_v2", "") or "").strip())
+
+    with st.expander("🩺 Saúde do sistema — somente gestão", expanded=False):
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("Supabase", "🟢 Configurado" if sb_ok else "🔴 Indisponível")
+        s2.metric("Bash LIST", "🟢 Configurado" if list_ok else "🔴 Ausente")
+        s3.metric("Bash V2", "🟢 Configurado" if v2_ok else "🔴 Ausente")
+        s4.metric("Execuções hoje", len(historico_hoje))
+        s5.metric("Tempo médio", _formatar_duracao(media))
+
+        st.caption(f"Sucessos hoje: **{sucessos}** · Falhas hoje: **{falhas}**")
+
+        if historico:
+            linhas = []
+            for item in historico[:10]:
+                dt = _parse_iso_brasil(item.get("horario", ""))
+                linhas.append({
+                    "Horário": dt.strftime("%d/%m/%Y %H:%M:%S") if dt else item.get("horario", ""),
+                    "Tipo": item.get("tipo", ""),
+                    "Resultado": "✅ Sucesso" if item.get("status") == "Sucesso" else "❌ Falhou",
+                    "Tempo": _formatar_duracao(item.get("duracao", 0)),
+                    "Motivo": item.get("erro", ""),
+                })
+            if pd is not None:
+                st.dataframe(pd.DataFrame(linhas), use_container_width=True, hide_index=True)
+            else:
+                st.table(linhas)
+        else:
+            st.info("Ainda não há histórico de atualizações para este hub.")
+
+
+def _executar_tick_automatico(hub):
+    cfg = st.session_state.config_por_hub.get(hub, config_default())
+    if not bool(cfg.get("auto_update_enabled", False)):
+        return
+
+    proxima = _parse_iso_brasil(cfg.get("auto_next_at", ""))
+    if not proxima:
+        _agendar_proxima_atualizacao(
+            hub,
+            minutos=cfg.get("auto_update_minutes", 60),
+            base=agora_brasil()
+        )
+        salvar_estado_persistido(hub)
+        return
+
+    if agora_brasil() >= proxima:
+        executar_atualizacao_hub(
+            hub,
+            tipo="Automática",
+            somente_v2=True,
+            arquivo_database=None,
+            exibir_mensagens=False,
+        )
+
+
+if hasattr(st, "fragment"):
+    @st.fragment(run_every=60)
+    def render_motor_atualizacao_automatica(hub):
+        _executar_tick_automatico(hub)
+        render_status_atualizacao_automatica(hub, compacto=True)
+else:
+    def render_motor_atualizacao_automatica(hub):
+        # Fallback para versões antigas do Streamlit:
+        # verifica a agenda a cada interação da página.
+        _executar_tick_automatico(hub)
+        render_status_atualizacao_automatica(hub, compacto=True)
+
 def render_configuracao_hub(hub):
     html(f'<div class="config-title">⚙️ Configuração Operacional - {hub}</div><div class="config-subtitle">Cole o Bash LIST, o Bash V2, informe as ATs e anexe a Database deste hub.</div>')
 
@@ -3338,6 +3709,10 @@ def render_configuracao_hub(hub):
         st.session_state[f"ats_am_{hub}"] = config_hub.get("ats_am", ats_legado)
     if f"ats_pm_{hub}" not in st.session_state:
         st.session_state[f"ats_pm_{hub}"] = config_hub.get("ats_pm", "")
+    if f"auto_update_enabled_{hub}" not in st.session_state:
+        st.session_state[f"auto_update_enabled_{hub}"] = bool(config_hub.get("auto_update_enabled", False))
+    if f"auto_update_minutes_{hub}" not in st.session_state:
+        st.session_state[f"auto_update_minutes_{hub}"] = int(config_hub.get("auto_update_minutes", 60) or 60)
 
     bash_list = st.text_area("Bash LIST / AUTH", height=180, key=f"bash_list_{hub}")
     bash_v2 = st.text_area("Bash V2", height=240, key=f"bash_v2_{hub}")
@@ -3358,7 +3733,6 @@ def render_configuracao_hub(hub):
             key=f"ats_pm_{hub}"
         )
 
-    # O link da planilha foi removido. A Database agora é carregada somente por arquivo.
     arquivo_database = st.file_uploader(
         "Anexar arquivo Database do Hub (.xlsx, .xls ou .csv)",
         type=["xlsx", "xls", "csv"],
@@ -3366,17 +3740,57 @@ def render_configuracao_hub(hub):
         help="A Database deve manter o nome do motorista na coluna B e o telefone na coluna I."
     )
 
-    # Mantém a estrutura antiga de configuração para compatibilidade,
-    # mas o link deixa de ser usado.
-    st.session_state.config_por_hub[hub] = {
+    html('<div class="section-title">🔄 Atualização automática</div>')
+    auto_col1, auto_col2 = st.columns([1, 1.4])
+    with auto_col1:
+        auto_ativa = st.toggle(
+            "Ativar atualização automática",
+            key=f"auto_update_enabled_{hub}"
+        )
+    with auto_col2:
+        intervalo_label = st.selectbox(
+            "Intervalo",
+            ["15 minutos", "30 minutos", "1 hora", "2 horas"],
+            index={15: 0, 30: 1, 60: 2, 120: 3}.get(
+                int(st.session_state.get(f"auto_update_minutes_{hub}", 60) or 60),
+                2
+            ),
+            key=f"auto_interval_label_{hub}"
+        )
+    mapa_intervalos = {
+        "15 minutos": 15,
+        "30 minutos": 30,
+        "1 hora": 60,
+        "2 horas": 120,
+    }
+    auto_minutos = mapa_intervalos[intervalo_label]
+    st.session_state[f"auto_update_minutes_{hub}"] = auto_minutos
+
+    config_anterior = st.session_state.config_por_hub.get(hub, config_default()).copy()
+    auto_antes = bool(config_anterior.get("auto_update_enabled", False))
+    intervalo_antes = int(config_anterior.get("auto_update_minutes", 60) or 60)
+
+    config_anterior.update({
         "bash_list": bash_list,
         "bash_v2": bash_v2,
         "ats": "\n".join([ats_am_texto, ats_pm_texto]).strip(),
         "ats_am": ats_am_texto,
         "ats_pm": ats_pm_texto,
         "db_link": "",
-    }
+        "auto_update_enabled": bool(auto_ativa),
+        "auto_update_minutes": int(auto_minutos),
+    })
+
+    if auto_ativa and (not auto_antes or intervalo_antes != auto_minutos or not config_anterior.get("auto_next_at")):
+        config_anterior["auto_next_at"] = (agora_brasil() + timedelta(minutes=auto_minutos)).isoformat()
+    elif not auto_ativa:
+        config_anterior["auto_next_at"] = ""
+
+    st.session_state.config_por_hub[hub] = config_anterior
     st.session_state.db_links_por_hub[hub] = ""
+
+    render_status_atualizacao_automatica(hub)
+    render_painel_saude_sistema(hub)
 
     col_a, col_c, col_b = st.columns([1, 1, 2])
     with col_a:
@@ -3387,17 +3801,28 @@ def render_configuracao_hub(hub):
         somente_v2 = st.checkbox("Buscar todas as páginas do V2", value=True, key=f"somente_v2_{hub}")
 
     if st.button(f"💾 Salvar configurações do {hub}", use_container_width=True, key=f"salvar_config_{hub}", type="primary"):
-        ats_am_salvar = st.session_state.get(f"ats_am_{hub}", "")
-        ats_pm_salvar = st.session_state.get(f"ats_pm_{hub}", "")
-        st.session_state.config_por_hub[hub] = {
+        cfg_salvar = st.session_state.config_por_hub.get(hub, config_default()).copy()
+        cfg_salvar.update({
             "bash_list": st.session_state.get(f"bash_list_{hub}", ""),
             "bash_v2": st.session_state.get(f"bash_v2_{hub}", ""),
-            "ats": "\n".join([ats_am_salvar, ats_pm_salvar]).strip(),
-            "ats_am": ats_am_salvar,
-            "ats_pm": ats_pm_salvar,
+            "ats": "\n".join([
+                st.session_state.get(f"ats_am_{hub}", ""),
+                st.session_state.get(f"ats_pm_{hub}", "")
+            ]).strip(),
+            "ats_am": st.session_state.get(f"ats_am_{hub}", ""),
+            "ats_pm": st.session_state.get(f"ats_pm_{hub}", ""),
             "db_link": "",
-        }
-        st.session_state.db_links_por_hub[hub] = ""
+            "auto_update_enabled": bool(st.session_state.get(f"auto_update_enabled_{hub}", False)),
+            "auto_update_minutes": int(st.session_state.get(f"auto_update_minutes_{hub}", 60) or 60),
+        })
+        if cfg_salvar["auto_update_enabled"] and not cfg_salvar.get("auto_next_at"):
+            cfg_salvar["auto_next_at"] = (
+                agora_brasil() + timedelta(minutes=cfg_salvar["auto_update_minutes"])
+            ).isoformat()
+        if not cfg_salvar["auto_update_enabled"]:
+            cfg_salvar["auto_next_at"] = ""
+
+        st.session_state.config_por_hub[hub] = cfg_salvar
         salvar_estado_persistido(hub)
         st.success(f"Configurações do {hub} salvas na nuvem.")
 
@@ -3405,16 +3830,13 @@ def render_configuracao_hub(hub):
         try:
             if arquivo_database is None:
                 raise ValueError("Anexe o arquivo Database antes de carregar os contatos.")
-
             contatos_database = carregar_database_arquivo(arquivo_database)
             st.session_state.contatos_por_hub[hub] = contatos_database
-
             if st.session_state.rotas_por_hub.get(hub):
                 st.session_state.rotas_por_hub[hub] = aplicar_contatos_nas_rotas(
                     st.session_state.rotas_por_hub[hub],
                     contatos_database
                 )
-
             salvar_estado_persistido(hub)
             st.success(f"Contatos carregados para {hub}: {len(contatos_database)}")
         except Exception as e:
@@ -3422,138 +3844,16 @@ def render_configuracao_hub(hub):
             log(f"Não foi possível carregar contatos do hub {hub}: {e}")
 
     if iniciar:
-        st.session_state.config_por_hub[hub] = {
-            "bash_list": bash_list,
-            "bash_v2": bash_v2,
-            "ats": "\n".join([ats_am_texto, ats_pm_texto]).strip(),
-            "ats_am": ats_am_texto,
-            "ats_pm": ats_pm_texto,
-            "db_link": "",
-        }
-        st.session_state.db_links_por_hub[hub] = ""
-        st.session_state.terminal = []
-
-        ats_am = limpar_ats(ats_am_texto)
-        ats_pm = limpar_ats(ats_pm_texto)
-        ats = list(dict.fromkeys(ats_am + ats_pm))
-        mapa_janelas = {at: "AM" for at in ats_am}
-        mapa_janelas.update({at: "PM" for at in ats_pm})
-
-        try:
-            log(f"Iniciando processo do hub {hub}...")
-            log(f"ATs digitadas: {len(ats)} | AM: {len(ats_am)} | PM: {len(ats_pm)}")
-
-            contatos_database = st.session_state.contatos_por_hub.get(hub, {}) or {}
-
-            if arquivo_database is not None:
-                try:
-                    log("Carregando Database de contatos pelo arquivo...")
-                    contatos_database = carregar_database_arquivo(arquivo_database)
-                    st.session_state.contatos_por_hub[hub] = contatos_database
-                    log(f"Contatos carregados: {len(contatos_database)}")
-                except Exception as e:
-                    contatos_database = st.session_state.contatos_por_hub.get(hub, {}) or {}
-                    log(f"Não foi possível carregar a Database: {e}")
-
-            if not bash_v2.strip():
-                raise ValueError("Cole o Bash V2.")
-            if not bash_list.strip():
-                raise ValueError("Cole o Bash LIST/AUTH.")
-
-            try:
-                log("Validando LIST/AUTH...")
-                json_list = carregar_json_ou_curl(bash_list)
-                if json_list:
-                    log("LIST/AUTH validado com sucesso.")
-            except Exception as e:
-                log(f"LIST/AUTH não validado, mas vou tentar usar cookies mesmo assim: {e}")
-
-            log("Consultando V2...")
-            lista_v2 = (
-                buscar_todas_paginas_v2(bash_v2)
-                if somente_v2
-                else carregar_json_ou_curl(bash_v2).get("data", {}).get("list", [])
-            )
-
-            log(f"Rotas recebidas do V2: {len(lista_v2)}")
-            mapa_v2 = processar_rotas_v2(lista_v2, ats, mapa_janelas=mapa_janelas)
-            log(f"ATs encontradas no V2: {len(mapa_v2)}")
-
-            if not mapa_v2:
-                st.warning("Nenhuma AT encontrada no V2.")
-            else:
-                log("Consultando pacotes por AT em modo seguro...")
-                metricas_lote = buscar_metricas_em_lote(
-                    bash_list,
-                    mapa_v2,
-                    max_workers=6
-                )
-
-                for at, metricas in metricas_lote.items():
-                    rota = mapa_v2[at]
-
-                    if bool(rota.get("Rota Concluida V2", False)):
-                        try:
-                            total_v2 = int(rota.get("Total V2") or 0)
-                        except Exception:
-                            total_v2 = 0
-
-                        total_final = (
-                            total_v2
-                            if total_v2 > 0
-                            else int(metricas.get("Total") or 0)
-                        )
-
-                        rota["Total"] = total_final
-                        rota["Entregues"] = total_final
-                        rota["On Hold"] = 0
-                        rota["Pendentes"] = 0
-                        rota["Performance"] = 1 if total_final else 0
-                        rota["Performance %"] = "100.0%" if total_final else "0.0%"
-                    else:
-                        rota["Total"] = metricas["Total"]
-                        rota["Entregues"] = metricas["Entregues"]
-                        rota["On Hold"] = metricas["On Hold"]
-                        rota["Pendentes"] = metricas["Pendentes"]
-                        rota["Performance"] = metricas["Performance"]
-                        rota["Performance %"] = metricas["Performance %"]
-
-                log(f"Pacotes consultados para {len(metricas_lote)} ATs.")
-
-                rotas = criar_rotas_apenas_v2(mapa_v2)
-                rotas = aplicar_contatos_nas_rotas(rotas, contatos_database)
-
-                st.session_state.rotas_por_hub[hub] = rotas
-                atualizar_hub_com_rotas(hub, rotas)
-                salvar_historico_driver_supabase(hub, rotas, limite_ofensor=95.0)
-                salvar_estado_persistido(hub)
-
-                st.success(f"Atualização do {hub} finalizada.")
-                st.session_state.tela = "hub"
-                st.session_state.hub = hub
-
-                token_atual = (
-                    st.session_state.get("auth_token")
-                    or st.query_params.get("auth", "")
-                )
-                if token_atual:
-                    st.query_params["auth"] = token_atual
-
-                st.query_params["u"] = st.session_state.get("usuario_login", "")
-                st.query_params["tela"] = "hub"
-                st.query_params["hub"] = hub
-                st.query_params["theme"] = (
-                    "dark"
-                    if st.session_state.get("tema_escuro", False)
-                    else "light"
-                )
-
-                time.sleep(1)
-                st.rerun()
-
-        except Exception as e:
-            st.error(f"Erro ao processar: {e}")
-            log(f"ERRO: {e}")
+        sucesso = executar_atualizacao_hub(
+            hub,
+            tipo="Manual",
+            somente_v2=somente_v2,
+            arquivo_database=arquivo_database,
+            exibir_mensagens=True,
+        )
+        if sucesso:
+            time.sleep(0.8)
+            st.rerun()
 
     for linha in st.session_state.terminal[-40:]:
         st.code(linha, language="text")
@@ -3678,6 +3978,9 @@ else:
         titulo=f"Dashboard {hub_atual}",
         subtitulo=f"Performance operacional em tempo real do hub {hub_atual}."
     )
+
+    # Enquanto esta sessão do navegador estiver aberta, verifica a agenda a cada minuto.
+    render_motor_atualizacao_automatica(hub_atual)
 
     aba_dashboard, aba_ranking, aba_inteligencia, aba_config = st.tabs([
         f"📊 Dashboard {hub_atual}",
