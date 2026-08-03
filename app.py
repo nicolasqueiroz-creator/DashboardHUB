@@ -2849,21 +2849,49 @@ def gerar_dataframe_ranking(rotas):
         if not nome or nome.upper() in ["NÃO BIPADA", "NAO BIPADA", "SEM MOTORISTA"]:
             continue
 
-        total = int(rota.get("Total") or 0)
-        entregues = int(rota.get("Entregues") or 0)
+        try:
+            total = int(rota.get("Total") or 0)
+        except Exception:
+            total = 0
+        try:
+            entregues = int(rota.get("Entregues") or 0)
+        except Exception:
+            entregues = 0
+        try:
+            pendentes = int(rota.get("Pendentes") or 0)
+        except Exception:
+            pendentes = 0
+        try:
+            on_hold = int(rota.get("On Hold") or 0)
+        except Exception:
+            on_hold = 0
 
         if total <= 0:
             continue
 
-        performance = (entregues / total) * 100
+        performance = min(max((entregues / total) * 100, 0), 100)
+        janela = str(rota.get("Janela", "") or "").strip().upper()
+        if janela not in ["AM", "PM"]:
+            janela = "Não definida"
+
+        link_whatsapp = montar_link_whatsapp(
+            st.session_state.get("hub", "LPE-12"),
+            rota
+        )
 
         linhas.append({
             "Motorista": nome.title(),
             "Performance": round(performance, 1),
             "Total": total,
             "Entregues": entregues,
-            "Pendentes": int(rota.get("Pendentes") or 0),
-            "AT": rota.get("AT", "")
+            "Pendentes": pendentes,
+            "On Hold": on_hold,
+            "AT": str(rota.get("AT", "") or ""),
+            "Janela": janela,
+            "Gaiola": str(rota.get("Gaiola", "") or ""),
+            "Cluster": str(rota.get("Cluster", "") or ""),
+            "Modalidade": str(rota.get("Modalidade", "") or ""),
+            "WhatsApp": link_whatsapp,
         })
 
     if pd is None:
@@ -2874,7 +2902,10 @@ def gerar_dataframe_ranking(rotas):
     if df.empty:
         return df
 
-    return df.sort_values(by=["Performance", "Entregues"], ascending=[False, False])
+    return df.sort_values(
+        by=["Performance", "Entregues", "Pendentes"],
+        ascending=[False, False, True]
+    )
 
 
 def gerar_csv_ranking(rotas):
@@ -2894,6 +2925,7 @@ def render_ranking_hub(hub):
     rotas = st.session_state.rotas_por_hub.get(hub, [])
 
     html(f'<div class="section-title">🏆 Ranking Operacional - {hub}</div>')
+    st.caption("Classificação dos motoristas por performance, volume entregue e quantidade de pendentes.")
 
     if not rotas:
         st.info("Nenhuma rota carregada para gerar ranking.")
@@ -2909,71 +2941,191 @@ def render_ranking_hub(hub):
         st.info("Nenhum motorista com dados válidos para ranking.")
         return
 
-    col1, col2 = st.columns([1, 1])
-
-    with col1:
-        minimo_ranking = st.number_input(
-            "Performance mínima para melhores",
+    # =========================
+    # FILTROS E LIMITES
+    # =========================
+    f1, f2, f3 = st.columns([1.1, 1, 1])
+    with f1:
+        filtro_janela = st.selectbox(
+            "Janela",
+            ["Consolidado", "AM", "PM"],
+            key=f"ranking_janela_{hub}"
+        )
+    with f2:
+        minimo_destaque = st.number_input(
+            "Destaques a partir de (%)",
             min_value=0.0,
             max_value=100.0,
             value=97.0,
             step=1.0,
             key=f"ranking_min_{hub}"
         )
-
-    with col2:
-        limite_ofensores = st.number_input(
-            "Performance máxima para ofensores",
+    with f3:
+        limite_ofensor = st.number_input(
+            "Ofensor abaixo de (%)",
             min_value=0.0,
             max_value=100.0,
-            value=80.0,
+            value=90.0,
             step=1.0,
             key=f"ranking_ofensor_{hub}"
         )
 
-    melhores = df[df["Performance"] >= minimo_ranking].copy()
-    ofensores = df[df["Performance"] < limite_ofensores].copy()
+    busca_motorista = st.text_input(
+        "Buscar motorista",
+        placeholder="Digite parte do nome do motorista",
+        key=f"ranking_busca_{hub}"
+    )
 
-    csv_ranking = gerar_csv_ranking(rotas)
-    if csv_ranking:
-        st.download_button(
-            label=f"📥 Exportar CSV Ranking - {hub}",
-            data=csv_ranking,
-            file_name=f"ranking_operacional_{hub}_{agora_brasil().strftime('%d_%m_%Y')}.csv",
-            mime="text/csv",
-            key=f"baixar_ranking_csv_{hub}",
-            type="primary"
+    df_filtrado = df.copy()
+    if filtro_janela in ["AM", "PM"]:
+        df_filtrado = df_filtrado[df_filtrado["Janela"] == filtro_janela]
+
+    if busca_motorista.strip():
+        df_filtrado = df_filtrado[
+            df_filtrado["Motorista"].str.contains(
+                busca_motorista.strip(),
+                case=False,
+                na=False
+            )
+        ]
+
+    if df_filtrado.empty:
+        st.warning("Nenhum motorista encontrado com os filtros selecionados.")
+        return
+
+    # =========================
+    # CLASSIFICAÇÃO
+    # =========================
+    def classificar(performance):
+        if performance >= minimo_destaque:
+            return "🟢 Destaque"
+        if performance < limite_ofensor:
+            return "🔴 Ofensor"
+        return "🟡 Atenção"
+
+    df_filtrado["Classificação"] = df_filtrado["Performance"].apply(classificar)
+    df_filtrado = df_filtrado.sort_values(
+        ["Performance", "Entregues", "Pendentes"],
+        ascending=[False, False, True]
+    ).reset_index(drop=True)
+    df_filtrado.insert(0, "Posição", range(1, len(df_filtrado) + 1))
+
+    destaques = df_filtrado[df_filtrado["Classificação"] == "🟢 Destaque"]
+    atencao = df_filtrado[df_filtrado["Classificação"] == "🟡 Atenção"]
+    ofensores = df_filtrado[df_filtrado["Classificação"] == "🔴 Ofensor"]
+
+    # =========================
+    # RESUMO EXECUTIVO
+    # =========================
+    motoristas_avaliados = len(df_filtrado)
+    performance_media = float(df_filtrado["Performance"].mean()) if motoristas_avaliados else 0
+    melhor_performance = float(df_filtrado["Performance"].max()) if motoristas_avaliados else 0
+    pendentes_ofensores = int(ofensores["Pendentes"].sum()) if not ofensores.empty else 0
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Motoristas", motoristas_avaliados)
+    c2.metric("Performance média", f"{performance_media:.1f}%")
+    c3.metric("🟢 Destaques", len(destaques))
+    c4.metric("🟡 Atenção", len(atencao))
+    c5.metric("🔴 Ofensores", len(ofensores))
+    c6.metric("Pendentes ofensores", f"{pendentes_ofensores:,}".replace(",", "."))
+
+    st.caption(f"Melhor performance no filtro atual: **{melhor_performance:.1f}%**")
+
+    # =========================
+    # EXPORTAÇÃO
+    # =========================
+    exportar = df_filtrado.drop(columns=["WhatsApp"], errors="ignore")
+    st.download_button(
+        label=f"📥 Exportar ranking filtrado - {hub}",
+        data=exportar.to_csv(index=False, sep=";", encoding="utf-8-sig"),
+        file_name=f"ranking_operacional_{hub}_{agora_brasil().strftime('%d_%m_%Y')}.csv",
+        mime="text/csv",
+        key=f"baixar_ranking_csv_{hub}",
+        type="primary"
+    )
+
+    # =========================
+    # PÓDIO
+    # =========================
+    html('<div class="section-title">🥇 Pódio do Dia</div>')
+    top3 = df_filtrado.head(3)
+    if top3.empty:
+        st.info("Sem dados para montar o pódio.")
+    else:
+        podium_cols = st.columns(3)
+        medalhas = ["🥇", "🥈", "🥉"]
+        for idx, (_, row) in enumerate(top3.iterrows()):
+            with podium_cols[idx]:
+                with st.container(border=True):
+                    st.markdown(f"### {medalhas[idx]} {row['Motorista']}")
+                    st.metric("Performance", f"{row['Performance']:.1f}%")
+                    st.caption(
+                        f"AT: {row['AT']} | Entregues: {int(row['Entregues'])} | "
+                        f"Pendentes: {int(row['Pendentes'])} | {row['Janela']}"
+                    )
+
+    # =========================
+    # TABELAS POR FAIXA
+    # =========================
+    aba_geral, aba_destaques, aba_atencao, aba_ofensores = st.tabs([
+        "📋 Ranking completo",
+        "🟢 Destaques",
+        "🟡 Atenção",
+        "🔴 Ofensores"
+    ])
+
+    colunas_exibicao = [
+        "Posição", "Classificação", "Motorista", "AT", "Janela",
+        "Total", "Entregues", "Pendentes", "On Hold",
+        "Performance", "Gaiola", "Cluster", "WhatsApp"
+    ]
+    colunas_exibicao = [c for c in colunas_exibicao if c in df_filtrado.columns]
+
+    def mostrar_tabela(base, mensagem_vazia):
+        if base.empty:
+            st.info(mensagem_vazia)
+            return
+
+        tabela = base[colunas_exibicao].copy()
+        st.dataframe(
+            tabela,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Posição": st.column_config.NumberColumn("Posição", format="%d"),
+                "Performance": st.column_config.ProgressColumn(
+                    "Performance",
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f%%"
+                ),
+                "WhatsApp": st.column_config.LinkColumn(
+                    "Contato",
+                    display_text="Abrir WhatsApp"
+                ),
+            }
         )
 
-    html('<div class="section-title">🏆 Melhores do Dia</div>')
+    with aba_geral:
+        mostrar_tabela(df_filtrado, "Nenhum motorista encontrado.")
 
-    if melhores.empty:
-        st.info("Nenhum motorista acima da performance mínima configurada.")
-    else:
-        melhores_lista = melhores.copy()
-        melhores_lista["Faixa"] = melhores_lista["Performance"].apply(lambda x: int(float(x)))
-        melhores_lista = melhores_lista.sort_values(["Faixa", "Performance", "Entregues"], ascending=[False, False, False])
-        posicao = 1
-        for faixa, grupo in melhores_lista.groupby("Faixa", sort=False):
-            with st.expander(f"🏆 {int(faixa)}% — {len(grupo)} motoristas", expanded=True):
-                for row in grupo.itertuples():
-                    st.markdown(f"**{posicao:02d}. {row.Motorista}** — {row.Performance:.1f}%")
-                    posicao += 1
+    with aba_destaques:
+        mostrar_tabela(destaques, "Nenhum motorista na faixa de Destaque.")
 
-    html('<div class="section-title">⚠️ Ofensores Operacionais</div>')
+    with aba_atencao:
+        mostrar_tabela(atencao, "Nenhum motorista na faixa de Atenção.")
 
-    if ofensores.empty:
-        st.success("Nenhum ofensor abaixo do limite configurado.")
-    else:
-        ofensores_lista = ofensores.copy()
-        ofensores_lista["Faixa"] = ofensores_lista["Performance"].apply(lambda x: int(float(x)))
-        ofensores_lista = ofensores_lista.sort_values(["Faixa", "Performance", "Entregues"], ascending=[True, True, False])
-        posicao = 1
-        for faixa, grupo in ofensores_lista.groupby("Faixa", sort=False):
-            with st.expander(f"⚠️ {int(faixa)}% — {len(grupo)} motoristas", expanded=True):
-                for row in grupo.itertuples():
-                    st.markdown(f"**{posicao:02d}. {row.Motorista}** — {row.Performance:.1f}%")
-                    posicao += 1
+    with aba_ofensores:
+        mostrar_tabela(ofensores, "Nenhum ofensor no filtro atual.")
+        if not ofensores.empty:
+            total_rotas_ofensoras = len(ofensores)
+            media_ofensores = float(ofensores["Performance"].mean())
+            st.warning(
+                f"Foram identificadas **{total_rotas_ofensoras} rotas ofensoras**, "
+                f"com performance média de **{media_ofensores:.1f}%** e "
+                f"**{pendentes_ofensores} pacotes pendentes**."
+            )
 
 def render_header(titulo="Dashboard de Hubs", subtitulo="Acompanhe a performance operacional dos hubs em tempo real."):
     c1, c2, c3 = st.columns([0.7, 5, 2])
@@ -3165,7 +3317,7 @@ def render_dashboard_hub(hub):
 
 
 def render_configuracao_hub(hub):
-    html(f'<div class="config-title">⚙️ Configuração Operacional - {hub}</div><div class="config-subtitle">Cole o Bash LIST, o Bash V2 e as ATs específicas deste hub.</div>')
+    html(f'<div class="config-title">⚙️ Configuração Operacional - {hub}</div><div class="config-subtitle">Cole o Bash LIST, o Bash V2, informe as ATs e anexe a Database deste hub.</div>')
 
     if st.button(f"🔄 Recarregar configurações salvas do {hub}", key=f"reload_config_{hub}", type="primary"):
         carregar_hub_supabase(hub, atualizar_widgets=True)
@@ -3186,8 +3338,6 @@ def render_configuracao_hub(hub):
         st.session_state[f"ats_am_{hub}"] = config_hub.get("ats_am", ats_legado)
     if f"ats_pm_{hub}" not in st.session_state:
         st.session_state[f"ats_pm_{hub}"] = config_hub.get("ats_pm", "")
-    if f"database_{hub}" not in st.session_state:
-        st.session_state[f"database_{hub}"] = config_hub.get("db_link", st.session_state.db_links_por_hub.get(hub, ""))
 
     bash_list = st.text_area("Bash LIST / AUTH", height=180, key=f"bash_list_{hub}")
     bash_v2 = st.text_area("Bash V2", height=240, key=f"bash_v2_{hub}")
@@ -3208,19 +3358,26 @@ def render_configuracao_hub(hub):
             key=f"ats_pm_{hub}"
         )
 
-    link_database = st.text_input("Link da planilha Database do Hub", placeholder="Cole o link da aba Database. Coluna B = Nome | Coluna I = Telefone", key=f"database_{hub}")
+    # O link da planilha foi removido. A Database agora é carregada somente por arquivo.
+    arquivo_database = st.file_uploader(
+        "Anexar arquivo Database do Hub (.xlsx, .xls ou .csv)",
+        type=["xlsx", "xls", "csv"],
+        key=f"database_file_{hub}",
+        help="A Database deve manter o nome do motorista na coluna B e o telefone na coluna I."
+    )
 
+    # Mantém a estrutura antiga de configuração para compatibilidade,
+    # mas o link deixa de ser usado.
     st.session_state.config_por_hub[hub] = {
         "bash_list": bash_list,
         "bash_v2": bash_v2,
         "ats": "\n".join([ats_am_texto, ats_pm_texto]).strip(),
         "ats_am": ats_am_texto,
         "ats_pm": ats_pm_texto,
-        "db_link": link_database,
+        "db_link": "",
     }
-    st.session_state.db_links_por_hub[hub] = link_database
+    st.session_state.db_links_por_hub[hub] = ""
 
-    arquivo_database = st.file_uploader("Anexar arquivo Database do Hub (.xlsx, .xls ou .csv)", type=["xlsx", "xls", "csv"], key=f"database_file_{hub}")
     col_a, col_c, col_b = st.columns([1, 1, 2])
     with col_a:
         iniciar = st.button(f"🚀 Atualizar {hub}", use_container_width=True, key=f"iniciar_{hub}", type="primary")
@@ -3238,23 +3395,26 @@ def render_configuracao_hub(hub):
             "ats": "\n".join([ats_am_salvar, ats_pm_salvar]).strip(),
             "ats_am": ats_am_salvar,
             "ats_pm": ats_pm_salvar,
-            "db_link": st.session_state.get(f"database_{hub}", ""),
+            "db_link": "",
         }
-        st.session_state.db_links_por_hub[hub] = st.session_state.config_por_hub[hub]["db_link"]
-        salvar_estado_persistido()
+        st.session_state.db_links_por_hub[hub] = ""
+        salvar_estado_persistido(hub)
         st.success(f"Configurações do {hub} salvas na nuvem.")
 
     if carregar_contatos_btn:
         try:
-            if arquivo_database is not None:
-                contatos_database = carregar_database_arquivo(arquivo_database)
-            elif link_database.strip():
-                contatos_database = carregar_database_contatos(link_database)
-            else:
-                raise ValueError("Anexe o arquivo Database ou informe o link da Database.")
+            if arquivo_database is None:
+                raise ValueError("Anexe o arquivo Database antes de carregar os contatos.")
+
+            contatos_database = carregar_database_arquivo(arquivo_database)
             st.session_state.contatos_por_hub[hub] = contatos_database
+
             if st.session_state.rotas_por_hub.get(hub):
-                st.session_state.rotas_por_hub[hub] = aplicar_contatos_nas_rotas(st.session_state.rotas_por_hub[hub], contatos_database)
+                st.session_state.rotas_por_hub[hub] = aplicar_contatos_nas_rotas(
+                    st.session_state.rotas_por_hub[hub],
+                    contatos_database
+                )
+
             salvar_estado_persistido(hub)
             st.success(f"Contatos carregados para {hub}: {len(contatos_database)}")
         except Exception as e:
@@ -3268,32 +3428,38 @@ def render_configuracao_hub(hub):
             "ats": "\n".join([ats_am_texto, ats_pm_texto]).strip(),
             "ats_am": ats_am_texto,
             "ats_pm": ats_pm_texto,
-            "db_link": link_database,
+            "db_link": "",
         }
-        st.session_state.db_links_por_hub[hub] = link_database
+        st.session_state.db_links_por_hub[hub] = ""
         st.session_state.terminal = []
+
         ats_am = limpar_ats(ats_am_texto)
         ats_pm = limpar_ats(ats_pm_texto)
         ats = list(dict.fromkeys(ats_am + ats_pm))
         mapa_janelas = {at: "AM" for at in ats_am}
         mapa_janelas.update({at: "PM" for at in ats_pm})
+
         try:
             log(f"Iniciando processo do hub {hub}...")
             log(f"ATs digitadas: {len(ats)} | AM: {len(ats_am)} | PM: {len(ats_pm)}")
+
             contatos_database = st.session_state.contatos_por_hub.get(hub, {}) or {}
-            if arquivo_database is not None or link_database.strip():
+
+            if arquivo_database is not None:
                 try:
-                    log("Carregando Database de contatos...")
-                    contatos_database = carregar_database_arquivo(arquivo_database) if arquivo_database is not None else carregar_database_contatos(link_database)
+                    log("Carregando Database de contatos pelo arquivo...")
+                    contatos_database = carregar_database_arquivo(arquivo_database)
                     st.session_state.contatos_por_hub[hub] = contatos_database
                     log(f"Contatos carregados: {len(contatos_database)}")
                 except Exception as e:
                     contatos_database = st.session_state.contatos_por_hub.get(hub, {}) or {}
                     log(f"Não foi possível carregar a Database: {e}")
+
             if not bash_v2.strip():
                 raise ValueError("Cole o Bash V2.")
             if not bash_list.strip():
                 raise ValueError("Cole o Bash LIST/AUTH.")
+
             try:
                 log("Validando LIST/AUTH...")
                 json_list = carregar_json_ou_curl(bash_list)
@@ -3301,31 +3467,42 @@ def render_configuracao_hub(hub):
                     log("LIST/AUTH validado com sucesso.")
             except Exception as e:
                 log(f"LIST/AUTH não validado, mas vou tentar usar cookies mesmo assim: {e}")
+
             log("Consultando V2...")
-            lista_v2 = buscar_todas_paginas_v2(bash_v2) if somente_v2 else (carregar_json_ou_curl(bash_v2).get("data", {}).get("list", []))
+            lista_v2 = (
+                buscar_todas_paginas_v2(bash_v2)
+                if somente_v2
+                else carregar_json_ou_curl(bash_v2).get("data", {}).get("list", [])
+            )
+
             log(f"Rotas recebidas do V2: {len(lista_v2)}")
             mapa_v2 = processar_rotas_v2(lista_v2, ats, mapa_janelas=mapa_janelas)
             log(f"ATs encontradas no V2: {len(mapa_v2)}")
+
             if not mapa_v2:
                 st.warning("Nenhuma AT encontrada no V2.")
             else:
                 log("Consultando pacotes por AT em modo seguro...")
-                metricas_lote = buscar_metricas_em_lote(bash_list, mapa_v2, max_workers=6)
+                metricas_lote = buscar_metricas_em_lote(
+                    bash_list,
+                    mapa_v2,
+                    max_workers=6
+                )
+
                 for at, metricas in metricas_lote.items():
                     rota = mapa_v2[at]
 
-                    # Regra operacional SPX:
-                    # Se o V2 informa a rota como concluída (status 5 + complete_time),
-                    # a rota deve ser considerada 100% finalizada no Dashboard.
-                    # Isso corrige casos em que o detalhe dos pacotes ainda retorna
-                    # SP_Ready_Collection/SP_Collection_Collected como pendente,
-                    # mesmo com a AT já completa no sistema.
                     if bool(rota.get("Rota Concluida V2", False)):
                         try:
                             total_v2 = int(rota.get("Total V2") or 0)
                         except Exception:
                             total_v2 = 0
-                        total_final = total_v2 if total_v2 > 0 else int(metricas.get("Total") or 0)
+
+                        total_final = (
+                            total_v2
+                            if total_v2 > 0
+                            else int(metricas.get("Total") or 0)
+                        )
 
                         rota["Total"] = total_final
                         rota["Entregues"] = total_final
@@ -3340,23 +3517,44 @@ def render_configuracao_hub(hub):
                         rota["Pendentes"] = metricas["Pendentes"]
                         rota["Performance"] = metricas["Performance"]
                         rota["Performance %"] = metricas["Performance %"]
+
                 log(f"Pacotes consultados para {len(metricas_lote)} ATs.")
+
                 rotas = criar_rotas_apenas_v2(mapa_v2)
                 rotas = aplicar_contatos_nas_rotas(rotas, contatos_database)
+
                 st.session_state.rotas_por_hub[hub] = rotas
                 atualizar_hub_com_rotas(hub, rotas)
                 salvar_historico_driver_supabase(hub, rotas, limite_ofensor=95.0)
                 salvar_estado_persistido(hub)
+
                 st.success(f"Atualização do {hub} finalizada.")
-                st.session_state.tela = "hub"; st.session_state.hub = hub
-                token_atual = st.session_state.get("auth_token") or st.query_params.get("auth", "")
-                if token_atual: st.query_params["auth"] = token_atual
+                st.session_state.tela = "hub"
+                st.session_state.hub = hub
+
+                token_atual = (
+                    st.session_state.get("auth_token")
+                    or st.query_params.get("auth", "")
+                )
+                if token_atual:
+                    st.query_params["auth"] = token_atual
+
                 st.query_params["u"] = st.session_state.get("usuario_login", "")
-                st.query_params["tela"] = "hub"; st.query_params["hub"] = hub; st.query_params["theme"] = "dark" if st.session_state.get("tema_escuro", False) else "light"
-                time.sleep(1); st.rerun()
+                st.query_params["tela"] = "hub"
+                st.query_params["hub"] = hub
+                st.query_params["theme"] = (
+                    "dark"
+                    if st.session_state.get("tema_escuro", False)
+                    else "light"
+                )
+
+                time.sleep(1)
+                st.rerun()
+
         except Exception as e:
             st.error(f"Erro ao processar: {e}")
             log(f"ERRO: {e}")
+
     for linha in st.session_state.terminal[-40:]:
         st.code(linha, language="text")
 
