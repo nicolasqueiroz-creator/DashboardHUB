@@ -228,8 +228,19 @@ def sincronizar_widgets_config_hub(hub):
         st.session_state[f"ats_{hub}"] = ats_legado
         st.session_state[f"ats_am_{hub}"] = config.get("ats_am", ats_legado)
         st.session_state[f"ats_pm_{hub}"] = config.get("ats_pm", "")
-        st.session_state[f"auto_update_enabled_{hub}"] = bool(config.get("auto_update_enabled", False))
-        st.session_state[f"auto_update_minutes_{hub}"] = int(config.get("auto_update_minutes", 60) or 60)
+
+        auto_ativa = bool(config.get("auto_update_enabled", False))
+        auto_minutos = int(config.get("auto_update_minutes", 60) or 60)
+        mapa_rotulos = {
+            15: "15 minutos",
+            30: "30 minutos",
+            60: "1 hora",
+            120: "2 horas",
+        }
+
+        st.session_state[f"auto_update_enabled_{hub}"] = auto_ativa
+        st.session_state[f"auto_update_minutes_{hub}"] = auto_minutos
+        st.session_state[f"auto_interval_label_{hub}"] = mapa_rotulos.get(auto_minutos, "1 hora")
     except Exception as e:
         safe_log(f"Erro ao sincronizar campos do hub {hub}: {e}")
 
@@ -3687,6 +3698,55 @@ else:
         _executar_tick_automatico(hub)
         render_status_atualizacao_automatica(hub, compacto=True)
 
+
+def salvar_preferencia_atualizacao_automatica(hub):
+    """Persiste imediatamente ativação e intervalo da atualização automática."""
+    try:
+        mapa_intervalos = {
+            "15 minutos": 15,
+            "30 minutos": 30,
+            "1 hora": 60,
+            "2 horas": 120,
+        }
+
+        chave_ativa = f"auto_update_enabled_{hub}"
+        chave_rotulo = f"auto_interval_label_{hub}"
+        chave_minutos = f"auto_update_minutes_{hub}"
+
+        ativa = bool(st.session_state.get(chave_ativa, False))
+        rotulo = st.session_state.get(chave_rotulo, "1 hora")
+        minutos = int(mapa_intervalos.get(rotulo, st.session_state.get(chave_minutos, 60)) or 60)
+
+        cfg = st.session_state.config_por_hub.get(hub, config_default()).copy()
+        estava_ativa = bool(cfg.get("auto_update_enabled", False))
+        intervalo_anterior = int(cfg.get("auto_update_minutes", 60) or 60)
+
+        cfg["auto_update_enabled"] = ativa
+        cfg["auto_update_minutes"] = minutos
+        st.session_state[chave_minutos] = minutos
+
+        # Ao ativar ou trocar o intervalo, reinicia a contagem a partir de agora.
+        if ativa:
+            if (
+                not estava_ativa
+                or intervalo_anterior != minutos
+                or not cfg.get("auto_next_at")
+            ):
+                cfg["auto_next_at"] = (
+                    agora_brasil() + timedelta(minutes=minutos)
+                ).isoformat()
+        else:
+            cfg["auto_next_at"] = ""
+
+        st.session_state.config_por_hub[hub] = cfg
+
+        # Salva imediatamente para não depender do botão geral de configurações.
+        salvar_estado_persistido(hub)
+
+        st.session_state[f"auto_preferencia_salva_{hub}"] = agora_brasil().isoformat()
+    except Exception as e:
+        safe_log(f"Erro ao salvar atualização automática do {hub}: {e}")
+
 def render_configuracao_hub(hub):
     html(f'<div class="config-title">⚙️ Configuração Operacional - {hub}</div><div class="config-subtitle">Cole o Bash LIST, o Bash V2, informe as ATs e anexe a Database deste hub.</div>')
 
@@ -3741,35 +3801,48 @@ def render_configuracao_hub(hub):
     )
 
     html('<div class="section-title">🔄 Atualização automática</div>')
+
+    mapa_rotulos = {
+        15: "15 minutos",
+        30: "30 minutos",
+        60: "1 hora",
+        120: "2 horas",
+    }
+
+    if f"auto_interval_label_{hub}" not in st.session_state:
+        st.session_state[f"auto_interval_label_{hub}"] = mapa_rotulos.get(
+            int(config_hub.get("auto_update_minutes", 60) or 60),
+            "1 hora"
+        )
+
     auto_col1, auto_col2 = st.columns([1, 1.4])
     with auto_col1:
         auto_ativa = st.toggle(
             "Ativar atualização automática",
-            key=f"auto_update_enabled_{hub}"
+            key=f"auto_update_enabled_{hub}",
+            on_change=salvar_preferencia_atualizacao_automatica,
+            args=(hub,)
         )
     with auto_col2:
         intervalo_label = st.selectbox(
             "Intervalo",
             ["15 minutos", "30 minutos", "1 hora", "2 horas"],
-            index={15: 0, 30: 1, 60: 2, 120: 3}.get(
-                int(st.session_state.get(f"auto_update_minutes_{hub}", 60) or 60),
-                2
-            ),
-            key=f"auto_interval_label_{hub}"
+            key=f"auto_interval_label_{hub}",
+            on_change=salvar_preferencia_atualizacao_automatica,
+            args=(hub,)
         )
+
     mapa_intervalos = {
         "15 minutos": 15,
         "30 minutos": 30,
         "1 hora": 60,
         "2 horas": 120,
     }
-    auto_minutos = mapa_intervalos[intervalo_label]
+    auto_minutos = int(mapa_intervalos.get(intervalo_label, 60))
     st.session_state[f"auto_update_minutes_{hub}"] = auto_minutos
 
+    # Mantém Bash e ATs sincronizados sem sobrescrever a preferência automática.
     config_anterior = st.session_state.config_por_hub.get(hub, config_default()).copy()
-    auto_antes = bool(config_anterior.get("auto_update_enabled", False))
-    intervalo_antes = int(config_anterior.get("auto_update_minutes", 60) or 60)
-
     config_anterior.update({
         "bash_list": bash_list,
         "bash_v2": bash_v2,
@@ -3777,17 +3850,12 @@ def render_configuracao_hub(hub):
         "ats_am": ats_am_texto,
         "ats_pm": ats_pm_texto,
         "db_link": "",
-        "auto_update_enabled": bool(auto_ativa),
-        "auto_update_minutes": int(auto_minutos),
     })
-
-    if auto_ativa and (not auto_antes or intervalo_antes != auto_minutos or not config_anterior.get("auto_next_at")):
-        config_anterior["auto_next_at"] = (agora_brasil() + timedelta(minutes=auto_minutos)).isoformat()
-    elif not auto_ativa:
-        config_anterior["auto_next_at"] = ""
-
     st.session_state.config_por_hub[hub] = config_anterior
     st.session_state.db_links_por_hub[hub] = ""
+
+    if st.session_state.get(f"auto_preferencia_salva_{hub}"):
+        st.caption("✅ Preferência de atualização automática salva imediatamente.")
 
     render_status_atualizacao_automatica(hub)
     render_painel_saude_sistema(hub)
