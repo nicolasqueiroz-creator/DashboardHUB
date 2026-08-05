@@ -1446,36 +1446,84 @@ def get_http_session():
 
 
 def parse_curl(curl_text):
-    texto = str(curl_text or "").replace("\\\n", "\n").replace("\r", "")
+    """
+    Interpreta cURL copiado do Chrome/Edge em diferentes formatos:
+    - aspas simples ou duplas;
+    - URL sem aspas;
+    - comando em uma ou várias linhas;
+    - quebra de linha do Windows;
+    - opção --url;
+    - cookie em -b/--cookie;
+    - corpo em --data-raw/--data/--data-binary.
+    """
+    texto = str(curl_text or "").strip()
+    texto = texto.replace("\r\n", "\n").replace("\r", "\n")
+    texto = texto.replace("\\\n", " ")
+    texto = re.sub(r"`\s*\n", " ", texto)  # PowerShell
+    texto = re.sub(r"\^\s*\n", " ", texto)  # CMD
+    texto = re.sub(r"\s+", " ", texto).strip()
+
     url = ""
     headers = {}
     cookies = ""
     data_raw = None
-    match_url = re.search(r"curl\s+'([^']+)'", texto) or re.search(r'curl\s+"([^"]+)"', texto)
-    if match_url:
-        url = match_url.group(1).strip()
-    for linha in texto.splitlines():
-        linha = linha.strip()
-        if linha.startswith("-H ") or linha.startswith("-H$") or linha.startswith("-H $"):
-            match_header = re.search(r"-H\s+\$?'(.+?)'\s*\\?$", linha) or re.search(r'-H\s+"(.+?)"\s*\\?$', linha)
-            if match_header:
-                header = match_header.group(1)
-                if ":" in header:
-                    k, v = header.split(":", 1)
-                    headers[k.strip()] = v.strip()
-        if linha.startswith("-b "):
-            match_cookie = re.search(r"-b\s+'(.+?)'\s*\\?$", linha) or re.search(r'-b\s+"(.+?)"\s*\\?$', linha)
-            if match_cookie:
-                cookies = match_cookie.group(1).strip()
-        if linha.startswith("--data-raw"):
-            match_data = re.search(r"--data-raw\s+'(.+?)'\s*\\?$", linha) or re.search(r'--data-raw\s+"(.+?)"\s*\\?$', linha)
-            if match_data:
-                data_raw = match_data.group(1).strip()
+
+    padroes_url = [
+        r"\bcurl(?:\.exe)?\s+(?:--location\s+)?'([^']+)'",
+        r'\bcurl(?:\.exe)?\s+(?:--location\s+)?"([^"]+)"',
+        r"\bcurl(?:\.exe)?\s+(?:--location\s+)?(https?://[^\s'\"\\]+)",
+        r"--url\s+'([^']+)'",
+        r'--url\s+"([^"]+)"',
+        r"--url\s+(https?://[^\s'\"\\]+)",
+    ]
+    for padrao in padroes_url:
+        achou = re.search(padrao, texto, flags=re.IGNORECASE)
+        if achou:
+            url = achou.group(1).strip()
+            break
+
+    # Também aceita quando o usuário cola somente a URL.
+    if not url and re.fullmatch(r"https?://\S+", texto):
+        url = texto.strip()
+
+    padroes_header = [
+        r"(?:-H|--header)\s+\$?'([^']+)'",
+        r'(?:-H|--header)\s+"([^"]+)"',
+    ]
+    for padrao in padroes_header:
+        for achou in re.finditer(padrao, texto, flags=re.IGNORECASE):
+            header = achou.group(1)
+            if ":" in header:
+                chave, valor = header.split(":", 1)
+                headers[chave.strip()] = valor.strip()
+
+    padroes_cookie = [
+        r"(?:-b|--cookie)\s+'([^']+)'",
+        r'(?:-b|--cookie)\s+"([^"]+)"',
+    ]
+    for padrao in padroes_cookie:
+        achou = re.search(padrao, texto, flags=re.IGNORECASE)
+        if achou:
+            cookies = achou.group(1).strip()
+            break
+
+    padroes_dados = [
+        r"(?:--data-raw|--data-binary|--data)\s+'([^']*)'",
+        r'(?:--data-raw|--data-binary|--data)\s+"((?:\\.|[^"])*)"',
+    ]
+    for padrao in padroes_dados:
+        achou = re.search(padrao, texto, flags=re.IGNORECASE)
+        if achou:
+            data_raw = achou.group(1).strip()
+            break
+
     if cookies:
         headers["cookie"] = cookies
+
     headers_lower = {k.lower(): v for k, v in headers.items()}
     if "content-type" not in headers_lower and "assignment_task/search/v2" in url:
         headers["content-type"] = "application/json;charset=UTF-8"
+
     return url, headers, data_raw
 
 
@@ -1536,10 +1584,34 @@ def extrair_lista_v2(resposta):
 
 
 def buscar_todas_paginas_v2(curl_v2, limite_paginas=50, count=100):
+    texto_v2 = str(curl_v2 or "").strip()
+    if not texto_v2:
+        raise ValueError("Bash V2 não configurado.")
+
+    # Quando foi colado o JSON de resposta em vez do cURL, usa a lista disponível.
+    if texto_v2.startswith("{"):
+        try:
+            resposta_json = json.loads(texto_v2)
+        except Exception as e:
+            raise ValueError(f"JSON do V2 inválido: {e}")
+
+        lista_json = extrair_lista_v2(resposta_json)
+        if not lista_json:
+            raise ValueError(
+                "O conteúdo do V2 é um JSON, mas não contém rotas em data.list. "
+                "Cole o cURL do V2 para buscar todas as páginas."
+            )
+        log(f"V2 carregado pelo JSON informado: {len(lista_json)} rotas")
+        return lista_json
+
     todas = []
-    url, headers, data_raw = parse_curl(curl_v2)
+    url, headers, data_raw = parse_curl(texto_v2)
     if not url:
-        raise ValueError("URL do V2 não encontrada.")
+        raise ValueError(
+            "URL do V2 não encontrada. Recarregue as configurações salvas ou cole novamente "
+            "o cURL completo da consulta V2."
+        )
+
     if data_raw:
         try:
             body_base = json.loads(data_raw)
@@ -1553,44 +1625,63 @@ def buscar_todas_paginas_v2(curl_v2, limite_paginas=50, count=100):
     status_v2.info("Consultando V2... iniciando busca de todas as páginas")
     total_api = None
     paginas_estimadas = limite_paginas
-    for pagina in range(1, limite_paginas + 1):
-        status_v2.info(f"Consultando V2... página {pagina}/{paginas_estimadas}")
-        progresso_v2.progress(min(pagina / max(paginas_estimadas, 1), 0.98))
-        body = dict(body_base)
-        body["pageno"] = pagina
-        body["count"] = count
-        resposta = executar_curl(curl_v2, body_override=body)
-        data = resposta.get("data", {}) if isinstance(resposta, dict) else {}
-        lista = extrair_lista_v2(resposta)
-        if total_api is None and isinstance(data, dict):
-            total_api = data.get("total") or data.get("total_count") or data.get("totalCount") or 0
-            try:
-                total_api = int(total_api or 0)
-            except Exception:
-                total_api = 0
-            if total_api:
-                paginas_estimadas = min(limite_paginas, max(math.ceil(total_api / count), 1))
-        if not lista:
-            if pagina == 1:
+
+    try:
+        for pagina in range(1, limite_paginas + 1):
+            status_v2.info(f"Consultando V2... página {pagina}/{paginas_estimadas}")
+            progresso_v2.progress(min(pagina / max(paginas_estimadas, 1), 0.98))
+
+            body = dict(body_base)
+            body["pageno"] = pagina
+            body["count"] = count
+
+            resposta = executar_curl(texto_v2, body_override=body)
+            data = resposta.get("data", {}) if isinstance(resposta, dict) else {}
+            lista = extrair_lista_v2(resposta)
+
+            if total_api is None and isinstance(data, dict):
+                total_api = (
+                    data.get("total")
+                    or data.get("total_count")
+                    or data.get("totalCount")
+                    or 0
+                )
                 try:
-                    status_v2.info("V2 retornou vazio. Tentando consulta original...")
-                    resposta_original = executar_curl(curl_v2)
-                    lista_original = extrair_lista_v2(resposta_original)
-                    if lista_original:
-                        todas.extend(lista_original)
+                    total_api = int(total_api or 0)
                 except Exception:
-                    pass
-            break
-        todas.extend(lista)
-        status_v2.info(f"Consultando V2... {len(todas)} rotas recebidas")
-        if total_api and len(todas) >= total_api:
-            break
-        if not total_api and len(lista) < count:
-            break
-    progresso_v2.progress(1.0)
-    status_v2.success(f"V2 concluído: {len(todas)} rotas recebidas")
-    time.sleep(0.15)
-    progresso_v2.empty(); status_v2.empty()
+                    total_api = 0
+
+                if total_api:
+                    paginas_estimadas = min(
+                        limite_paginas,
+                        max(math.ceil(total_api / count), 1)
+                    )
+
+            if not lista:
+                if pagina == 1:
+                    try:
+                        status_v2.info("V2 retornou vazio. Tentando consulta original...")
+                        resposta_original = executar_curl(texto_v2)
+                        lista_original = extrair_lista_v2(resposta_original)
+                        if lista_original:
+                            todas.extend(lista_original)
+                    except Exception:
+                        pass
+                break
+
+            todas.extend(lista)
+            status_v2.info(f"Consultando V2... {len(todas)} rotas recebidas")
+
+            if total_api and len(todas) >= total_api:
+                break
+            if not total_api and len(lista) < count:
+                break
+    finally:
+        progresso_v2.progress(1.0)
+        time.sleep(0.10)
+        progresso_v2.empty()
+        status_v2.empty()
+
     log(f"V2 carregado: {len(todas)} rotas")
     return todas
 
@@ -3408,6 +3499,152 @@ def _agendar_proxima_atualizacao(hub, minutos=None, base=None):
     return cfg["auto_next_at"]
 
 
+
+def _texto_config_valido(valor):
+    return bool(str(valor or "").strip())
+
+
+def _mesclar_config_sem_apagar(base, complemento):
+    """
+    Mescla configurações sem substituir Bash/ATs válidos por campos vazios de outra sessão.
+    """
+    resultado = config_default()
+    if isinstance(base, dict):
+        resultado.update(base)
+
+    if not isinstance(complemento, dict):
+        return resultado
+
+    campos_texto = ["bash_list", "bash_v2", "ats", "ats_am", "ats_pm"]
+    for campo in campos_texto:
+        valor = complemento.get(campo)
+        if _texto_config_valido(valor):
+            resultado[campo] = valor
+
+    for campo in [
+        "auto_update_enabled",
+        "auto_update_minutes",
+        "auto_next_at",
+        "auto_last_attempt",
+        "auto_last_status",
+        "auto_last_error",
+        "auto_last_duration",
+        "auto_last_type",
+        "auto_history",
+    ]:
+        if campo in complemento and complemento.get(campo) is not None:
+            resultado[campo] = complemento.get(campo)
+
+    resultado["db_link"] = ""
+    return resultado
+
+
+def carregar_config_execucao_hub(hub, usar_widgets=False):
+    """
+    Fonte única de configuração para atualização.
+
+    Ordem:
+    1. configuração existente na sessão;
+    2. campos visíveis da Configuração, somente na atualização manual;
+    3. Supabase, caso Bash LIST/V2 ou ATs estejam ausentes/inválidos.
+
+    O merge nunca troca um Bash válido por texto vazio de outra sessão.
+    """
+    cfg = _mesclar_config_sem_apagar(
+        config_default(),
+        st.session_state.config_por_hub.get(hub, {})
+    )
+
+    if usar_widgets:
+        cfg_widgets = {
+            "bash_list": st.session_state.get(f"bash_list_{hub}", ""),
+            "bash_v2": st.session_state.get(f"bash_v2_{hub}", ""),
+            "ats_am": st.session_state.get(f"ats_am_{hub}", ""),
+            "ats_pm": st.session_state.get(f"ats_pm_{hub}", ""),
+        }
+        cfg_widgets["ats"] = "\n".join([
+            str(cfg_widgets.get("ats_am", "") or ""),
+            str(cfg_widgets.get("ats_pm", "") or ""),
+        ]).strip()
+        cfg = _mesclar_config_sem_apagar(cfg, cfg_widgets)
+
+    def configuracao_incompleta(config):
+        ats_ok = bool(
+            limpar_ats(str(config.get("ats_am", "") or ""))
+            or limpar_ats(str(config.get("ats_pm", "") or ""))
+            or limpar_ats(str(config.get("ats", "") or ""))
+        )
+        return not (
+            _texto_config_valido(config.get("bash_list"))
+            and _texto_config_valido(config.get("bash_v2"))
+            and ats_ok
+        )
+
+    # Busca diretamente no Supabase quando a sessão do usuário não tem tudo.
+    if configuracao_incompleta(cfg):
+        try:
+            sb = get_supabase()
+            if sb:
+                resposta = (
+                    sb.table(SUPABASE_TABLE_HUBS)
+                    .select("dados")
+                    .eq("hub", hub)
+                    .limit(1)
+                    .execute()
+                )
+                for item in resposta.data or []:
+                    dados = item.get("dados", {})
+                    cfg_nuvem = dados.get("__config", {}) if isinstance(dados, dict) else {}
+                    cfg = _mesclar_config_sem_apagar(cfg, cfg_nuvem)
+                    break
+        except Exception as e:
+            safe_log(f"Não foi possível recuperar a configuração do {hub} no Supabase: {e}")
+
+    # Normaliza ATS legado.
+    if not _texto_config_valido(cfg.get("ats_am")) and _texto_config_valido(cfg.get("ats")):
+        cfg["ats_am"] = cfg.get("ats", "")
+    cfg["ats"] = "\n".join([
+        str(cfg.get("ats_am", "") or ""),
+        str(cfg.get("ats_pm", "") or ""),
+    ]).strip()
+
+    st.session_state.config_por_hub[hub] = cfg
+    return cfg
+
+
+def validar_config_execucao_hub(cfg):
+    bash_list = str(cfg.get("bash_list", "") or "").strip()
+    bash_v2 = str(cfg.get("bash_v2", "") or "").strip()
+
+    if not bash_list:
+        raise ValueError("Bash LIST/AUTH não configurado para este hub.")
+    if not bash_v2:
+        raise ValueError("Bash V2 não configurado para este hub.")
+
+    # JSON é aceito; cURL precisa possuir URL.
+    if not bash_list.startswith("{"):
+        url_list, _, _ = parse_curl(bash_list)
+        if not url_list:
+            raise ValueError(
+                "O Bash LIST/AUTH salvo não contém uma URL válida. "
+                "Cole novamente o cURL completo e salve as configurações."
+            )
+
+    if not bash_v2.startswith("{"):
+        url_v2, _, _ = parse_curl(bash_v2)
+        if not url_v2:
+            raise ValueError(
+                "O Bash V2 salvo não contém uma URL válida. "
+                "Recarregue as configurações ou cole novamente o cURL completo do V2."
+            )
+
+    ats_am = limpar_ats(str(cfg.get("ats_am", cfg.get("ats", "")) or ""))
+    ats_pm = limpar_ats(str(cfg.get("ats_pm", "") or ""))
+    if not ats_am and not ats_pm:
+        raise ValueError("Nenhuma AT AM ou PM configurada para este hub.")
+
+    return bash_list, bash_v2, ats_am, ats_pm
+
 def executar_atualizacao_hub(
     hub,
     tipo="Manual",
@@ -3422,11 +3659,12 @@ def executar_atualizacao_hub(
             st.warning("⚠️ Já existe uma atualização em andamento para este hub.")
         return False
 
-    cfg = st.session_state.config_por_hub.get(hub, config_default()).copy()
-    bash_list = str(cfg.get("bash_list", "") or "")
-    bash_v2 = str(cfg.get("bash_v2", "") or "")
-    ats_am_texto = str(cfg.get("ats_am", cfg.get("ats", "")) or "")
-    ats_pm_texto = str(cfg.get("ats_pm", "") or "")
+    # Atualização manual usa os campos visíveis; automática usa a configuração salva.
+    cfg = carregar_config_execucao_hub(
+        hub,
+        usar_widgets=(str(tipo).lower() == "manual")
+    )
+    bash_list, bash_v2, ats_am, ats_pm = validar_config_execucao_hub(cfg)
 
     inicio = time.time()
     st.session_state[chave_execucao] = True
@@ -3446,13 +3684,6 @@ def executar_atualizacao_hub(
         st.session_state.terminal = []
         etapa(5, f"🔄 {tipo}: preparando dados do {hub}")
 
-        if not bash_v2.strip():
-            raise ValueError("Bash V2 não configurado.")
-        if not bash_list.strip():
-            raise ValueError("Bash LIST/AUTH não configurado.")
-
-        ats_am = limpar_ats(ats_am_texto)
-        ats_pm = limpar_ats(ats_pm_texto)
         ats = list(dict.fromkeys(ats_am + ats_pm))
         if not ats:
             raise ValueError("Nenhuma AT AM ou PM configurada.")
@@ -3912,6 +4143,23 @@ def render_configuracao_hub(hub):
             log(f"Não foi possível carregar contatos do hub {hub}: {e}")
 
     if iniciar:
+        # Grava os campos desta sessão antes de executar. Isso garante que usuários
+        # diferentes usem exatamente o Bash e as ATs visíveis na tela.
+        cfg_manual = st.session_state.config_por_hub.get(hub, config_default()).copy()
+        cfg_manual.update({
+            "bash_list": st.session_state.get(f"bash_list_{hub}", ""),
+            "bash_v2": st.session_state.get(f"bash_v2_{hub}", ""),
+            "ats_am": st.session_state.get(f"ats_am_{hub}", ""),
+            "ats_pm": st.session_state.get(f"ats_pm_{hub}", ""),
+            "ats": "\n".join([
+                st.session_state.get(f"ats_am_{hub}", ""),
+                st.session_state.get(f"ats_pm_{hub}", ""),
+            ]).strip(),
+            "db_link": "",
+        })
+        st.session_state.config_por_hub[hub] = cfg_manual
+        salvar_estado_persistido(hub)
+
         sucesso = executar_atualizacao_hub(
             hub,
             tipo="Manual",
