@@ -4281,7 +4281,7 @@ def render_consolidado():
 
 
 # =========================================================
-# ACEITE DE ROTAS / WHATSAPP - V1 (PRÉVIA, SEM DISPARO REAL)
+# ACEITE DE ROTAS / WHATSAPP - V2 (FILA DE DISPAROS)
 # =========================================================
 def ler_romaneio_aceite(arquivo):
     """Lê a aba Plano de expedição e retorna Rota, AT, Gaiola e Driver."""
@@ -4295,12 +4295,7 @@ def ler_romaneio_aceite(arquivo):
         gaiola = str(gaiola or "").strip()
         if not driver or normalizar_nome(driver) in {"driver planejado", "driver"}:
             return
-        registros.append({
-            "Rota": str(rota or "").strip(),
-            "AT": str(at or "").strip(),
-            "Gaiola": gaiola,
-            "Driver": driver,
-        })
+        registros.append({"Rota": str(rota or "").strip(), "AT": str(at or "").strip(), "Gaiola": gaiola, "Driver": driver})
 
     if nome.endswith((".xlsx", ".xlsm")):
         if openpyxl is None:
@@ -4311,7 +4306,6 @@ def ler_romaneio_aceite(arquivo):
             raise ValueError("Não encontrei a aba 'Plano de expedição' no romaneio.")
         ws = wb[alvo]
         for row in ws.iter_rows(min_row=2, values_only=True):
-            # A=Rota, B=AT/TO, C=Gaiola, W=Driver planejado
             if len(row) >= 23:
                 adicionar(row[0], row[1], row[2], row[22])
     elif nome.endswith(".xls"):
@@ -4329,13 +4323,11 @@ def ler_romaneio_aceite(arquivo):
     else:
         raise ValueError("O romaneio deve ser .xlsx, .xlsm ou .xls")
 
-    # Remove duplicatas exatas de driver/AT/gaiola sem perder a ordem.
     unicos, vistos = [], set()
     for item in registros:
         chave = (normalizar_nome(item["Driver"]), item["AT"], item["Gaiola"])
         if chave not in vistos:
-            vistos.add(chave)
-            unicos.append(item)
+            vistos.add(chave); unicos.append(item)
     return unicos
 
 
@@ -4356,106 +4348,127 @@ Você foi escalado para a rota/gaiola *{gaiola}*.
 *{hub} | Operação*"""
 
 
+def link_whatsapp_aceite(nome, telefone, gaiola, hub):
+    telefone = limpar_telefone(telefone)
+    if not telefone:
+        return ""
+    texto = mensagem_aceite_driver(nome, gaiola, hub)
+    return "https://api.whatsapp.com/send?phone=" + telefone + "&text=" + quote(texto)
+
+
+def _aceite_fila_key(hub): return f"aceite_fila_{hub}"
+def _aceite_pos_key(hub): return f"aceite_pos_{hub}"
+def _aceite_hist_key(hub): return f"aceite_historico_{hub}"
+
+
 def render_aceite_rotas(hub):
     html(f'<div class="section-title">📲 Aceite de Rotas - {hub}</div>')
-    st.caption("V1 de validação: cruza o romaneio com a Base de Drivers e prepara os destinatários. Nenhuma mensagem é enviada nesta versão.")
+    st.caption("V2: selecione os drivers, monte uma fila e abra cada conversa no WhatsApp Business com a mensagem pronta. O envio é confirmado manualmente no WhatsApp.")
 
     cbase, crom = st.columns(2)
     with cbase:
         st.markdown("#### 1. Base de Drivers")
-        base = st.file_uploader(
-            "Base SPX (.csv, .xlsx ou .xls)",
-            type=["csv", "xlsx", "xls", "xlsm"],
-            key=f"aceite_base_{hub}",
-            help="Na base SPX atual são usados Driver Name e Phone Number."
-        )
+        base = st.file_uploader("Base SPX (.csv, .xlsx ou .xls)", type=["csv", "xlsx", "xls", "xlsm"], key=f"aceite_base_{hub}", help="Na base SPX atual são usados Driver Name e Phone Number.")
         if st.button("📱 Carregar / atualizar base", key=f"aceite_carregar_base_{hub}", use_container_width=True, type="primary"):
             try:
-                if base is None:
-                    raise ValueError("Selecione a Base de Drivers.")
+                if base is None: raise ValueError("Selecione a Base de Drivers.")
                 contatos = carregar_database_arquivo(base)
                 st.session_state.contatos_por_hub[hub] = contatos
                 salvar_estado_persistido(hub)
                 st.success(f"Base carregada: {len(contatos)} drivers com telefone.")
-            except Exception as e:
-                st.error(f"Erro ao carregar a base: {e}")
-
-        qtd_contatos = len(st.session_state.contatos_por_hub.get(hub, {}))
-        st.info(f"📱 Base atualmente disponível para {hub}: **{qtd_contatos} contatos**")
+            except Exception as e: st.error(f"Erro ao carregar a base: {e}")
+        st.info(f"📱 Base atualmente disponível para {hub}: **{len(st.session_state.contatos_por_hub.get(hub, {}))} contatos**")
 
     with crom:
         st.markdown("#### 2. Romaneio do dia")
-        romaneio = st.file_uploader(
-            "Romaneio (.xlsx, .xlsm ou .xls)",
-            type=["xlsx", "xlsm", "xls"],
-            key=f"aceite_romaneio_{hub}",
-            help="Aba Plano de expedição: A=Rota, B=AT, C=Gaiola e W=Driver planejado."
-        )
+        romaneio = st.file_uploader("Romaneio (.xlsx, .xlsm ou .xls)", type=["xlsx", "xlsm", "xls"], key=f"aceite_romaneio_{hub}", help="Aba Plano de expedição: A=Rota, B=AT, C=Gaiola e W=Driver planejado.")
         if st.button("📄 Processar romaneio", key=f"aceite_processar_{hub}", use_container_width=True, type="primary"):
             try:
-                if romaneio is None:
-                    raise ValueError("Selecione o romaneio do dia.")
-                registros = ler_romaneio_aceite(romaneio)
-                contatos = st.session_state.contatos_por_hub.get(hub, {})
+                if romaneio is None: raise ValueError("Selecione o romaneio do dia.")
+                registros = ler_romaneio_aceite(romaneio); contatos = st.session_state.contatos_por_hub.get(hub, {})
                 cruzados = []
                 for r in registros:
                     telefone = buscar_contato_motorista(r["Driver"], contatos)
-                    item = dict(r)
-                    item["Telefone"] = telefone
-                    item["Status"] = "✅ Pronto" if telefone else "⚠️ Sem telefone"
-                    item["Selecionar"] = bool(telefone)
-                    cruzados.append(item)
+                    item = dict(r); item["Telefone"] = telefone; item["Status"] = "✅ Pronto" if telefone else "⚠️ Sem telefone"; item["Selecionar"] = bool(telefone); cruzados.append(item)
                 st.session_state[f"aceite_cruzados_{hub}"] = cruzados
                 st.session_state[f"aceite_data_{hub}"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+                st.session_state.pop(_aceite_fila_key(hub), None); st.session_state.pop(_aceite_pos_key(hub), None)
                 st.success(f"Romaneio processado: {len(cruzados)} drivers escalados.")
-            except Exception as e:
-                st.error(f"Erro ao processar o romaneio: {e}")
+            except Exception as e: st.error(f"Erro ao processar o romaneio: {e}")
 
     dados = st.session_state.get(f"aceite_cruzados_{hub}", [])
     if not dados:
-        st.info("Carregue a Base de Drivers e processe o romaneio para montar a prévia dos disparos.")
+        st.info("Carregue a Base de Drivers e processe o romaneio para montar os disparos."); return
+
+    historico = st.session_state.setdefault(_aceite_hist_key(hub), [])
+    agora = agora_brasil()
+    enviados = len([x for x in historico if x.get("status") == "Enviado"])
+    vencidos = 0
+    for x in historico:
+        try:
+            if x.get("status") == "Enviado" and datetime.fromisoformat(x.get("prazo_iso", "")) < agora: vencidos += 1
+        except Exception: pass
+    total = len(dados); prontos = sum(1 for x in dados if x.get("Telefone")); sem_tel = total-prontos
+    m1,m2,m3,m4,m5 = st.columns(5)
+    m1.metric("Escalados", total); m2.metric("Prontos", prontos); m3.metric("Sem telefone", sem_tel); m4.metric("Enviados", enviados); m5.metric("Prazo vencido", vencidos)
+
+    st.markdown("#### 3. Selecione os drivers")
+    selecionados = []
+    if pd is not None:
+        df = pd.DataFrame(dados); ordem=["Selecionar","Rota","AT","Gaiola","Driver","Telefone","Status"]; df=df[[c for c in ordem if c in df.columns]]
+        editado = st.data_editor(df, hide_index=True, use_container_width=True, disabled=["Rota","AT","Gaiola","Driver","Telefone","Status"], key=f"aceite_editor_{hub}")
+        selecionados = editado[(editado["Selecionar"] == True) & (editado["Telefone"].astype(str) != "")].to_dict("records")
+    else: st.dataframe(dados, use_container_width=True)
+    st.caption(f"Processado em {st.session_state.get(f'aceite_data_{hub}', '-')}. **{len(selecionados)} drivers selecionados.**")
+
+    fila = st.session_state.get(_aceite_fila_key(hub), [])
+    if not fila:
+        if st.button(f"📲 INICIAR FILA COM {len(selecionados)} DRIVERS", type="primary", use_container_width=True, disabled=not selecionados, key=f"aceite_iniciar_fila_{hub}"):
+            st.session_state[_aceite_fila_key(hub)] = selecionados
+            st.session_state[_aceite_pos_key(hub)] = 0
+            st.rerun()
+        exemplo = next((x for x in dados if x.get("Telefone")), dados[0])
+        with st.expander("👁️ Prévia da mensagem"):
+            st.text_area("Mensagem", value=mensagem_aceite_driver(exemplo.get("Driver"), exemplo.get("Gaiola"), hub), height=280, disabled=True, key=f"aceite_preview_{hub}")
         return
 
-    total = len(dados)
-    prontos = sum(1 for x in dados if x.get("Telefone"))
-    sem_tel = total - prontos
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Escalados", total)
-    m2.metric("Prontos", prontos)
-    m3.metric("Sem telefone", sem_tel)
-    m4.metric("Mensagens enviadas", 0)
-
-    st.markdown("#### 3. Conferência dos drivers")
-    if pd is not None:
-        df = pd.DataFrame(dados)
-        ordem = ["Selecionar", "Rota", "AT", "Gaiola", "Driver", "Telefone", "Status"]
-        df = df[[c for c in ordem if c in df.columns]]
-        editado = st.data_editor(
-            df,
-            hide_index=True,
-            use_container_width=True,
-            disabled=["Rota", "AT", "Gaiola", "Driver", "Telefone", "Status"],
-            key=f"aceite_editor_{hub}"
-        )
-        selecionados = editado[(editado["Selecionar"] == True) & (editado["Telefone"].astype(str) != "")]
+    pos = int(st.session_state.get(_aceite_pos_key(hub), 0) or 0)
+    if pos >= len(fila):
+        st.success(f"✅ Fila concluída. {len(fila)} drivers foram percorridos.")
+        if st.button("🆕 Encerrar fila e voltar à seleção", use_container_width=True, key=f"aceite_encerrar_{hub}"):
+            st.session_state.pop(_aceite_fila_key(hub), None); st.session_state.pop(_aceite_pos_key(hub), None); st.rerun()
     else:
-        st.dataframe(dados, use_container_width=True)
-        selecionados = []
+        atual = fila[pos]
+        st.markdown("#### 4. Fila de disparos")
+        st.progress((pos+1)/len(fila), text=f"Driver {pos+1} de {len(fila)}")
+        c1,c2,c3,c4 = st.columns([2.2,1,1.5,1.5])
+        c1.markdown(f"**{atual.get('Driver','')}**"); c2.markdown(f"**Gaiola:** {atual.get('Gaiola','')}"); c3.markdown(f"**AT:** {atual.get('AT','')}"); c4.markdown(f"**Telefone:** {atual.get('Telefone','')}")
+        st.text_area("Mensagem preparada", value=mensagem_aceite_driver(atual.get("Driver"), atual.get("Gaiola"), hub), height=250, disabled=True, key=f"aceite_msg_fila_{hub}_{pos}")
+        link = link_whatsapp_aceite(atual.get("Driver"), atual.get("Telefone"), atual.get("Gaiola"), hub)
+        st.markdown(f'<a href="{link}" target="_blank" style="display:block;text-align:center;padding:14px 18px;border-radius:10px;background:#25D366;color:white;text-decoration:none;font-weight:900;font-size:17px;">📲 ABRIR NO WHATSAPP BUSINESS</a>', unsafe_allow_html=True)
+        st.caption("Envie a mensagem no WhatsApp e depois volte aqui para registrar o envio e avançar para o próximo driver.")
+        b1,b2,b3 = st.columns([1.5,1,1])
+        with b1:
+            if st.button("✅ ENVIADO — PRÓXIMO DRIVER", type="primary", use_container_width=True, key=f"aceite_enviado_{hub}_{pos}"):
+                envio = agora_brasil(); prazo = envio + timedelta(hours=1)
+                historico.append({"hub":hub,"Driver":atual.get("Driver",""),"Rota":atual.get("Rota",""),"AT":atual.get("AT",""),"Gaiola":atual.get("Gaiola",""),"Telefone":atual.get("Telefone",""),"enviado_em":envio.strftime("%d/%m/%Y %H:%M"),"prazo":prazo.strftime("%d/%m/%Y %H:%M"),"prazo_iso":prazo.isoformat(),"status":"Enviado","usuario":st.session_state.get("usuario_login","")})
+                st.session_state[_aceite_pos_key(hub)] = pos+1; st.rerun()
+        with b2:
+            if st.button("⏭️ PULAR", use_container_width=True, key=f"aceite_pular_{hub}_{pos}"):
+                st.session_state[_aceite_pos_key(hub)] = pos+1; st.rerun()
+        with b3:
+            if st.button("🛑 CANCELAR FILA", use_container_width=True, key=f"aceite_cancelar_{hub}_{pos}"):
+                st.session_state.pop(_aceite_fila_key(hub), None); st.session_state.pop(_aceite_pos_key(hub), None); st.rerun()
 
-    st.caption(f"Processado em {st.session_state.get(f'aceite_data_{hub}', '-')}. Selecionados para futura integração: {len(selecionados) if pd is not None else 0}.")
-
-    st.markdown("#### 4. Prévia da mensagem")
-    exemplo = next((x for x in dados if x.get("Telefone")), dados[0])
-    st.text_area(
-        "Mensagem que será personalizada por driver",
-        value=mensagem_aceite_driver(exemplo.get("Driver"), exemplo.get("Gaiola"), hub),
-        height=300,
-        disabled=True,
-        key=f"aceite_preview_{hub}"
-    )
-
-    st.warning("🔒 Disparo real ainda está bloqueado nesta V1. O próximo passo será conectar a API oficial do WhatsApp depois de validar o cruzamento Base × Romaneio.")
-    st.button("📲 DISPARAR COBRANÇA DE ACEITE (V1 - BLOQUEADO)", disabled=True, use_container_width=True, key=f"aceite_disparo_bloqueado_{hub}")
+    if historico:
+        st.markdown("#### 5. Histórico desta sessão")
+        hist_exibir=[]; agora=agora_brasil()
+        for x in reversed(historico):
+            y=dict(x)
+            try: y["Situação"] = "🔴 Prazo encerrado" if datetime.fromisoformat(y.get("prazo_iso","")) < agora else "🟢 Dentro do prazo"
+            except Exception: y["Situação"] = y.get("status","")
+            y.pop("prazo_iso", None); hist_exibir.append(y)
+        st.dataframe(hist_exibir, hide_index=True, use_container_width=True)
 
 
 # =========================================================
