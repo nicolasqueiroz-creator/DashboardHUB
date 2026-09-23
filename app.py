@@ -1256,44 +1256,63 @@ def carregar_database_contatos(link_database):
 
 
 def carregar_database_arquivo(arquivo):
+    """Carrega contatos da Database.
+
+    Prioriza cabeçalhos Driver Name / Phone Number (base SPX atual) e mantém
+    compatibilidade com o formato legado (nome na coluna B e telefone na I).
+    """
     if arquivo is None:
         return {}
     nome_arquivo = arquivo.name.lower()
     contatos = {}
 
-    def adicionar_linha(linha):
-        if len(linha) < 9:
-            return
-        nome = str(linha[1] or "").strip()
-        telefone = limpar_telefone(linha[8] if len(linha) > 8 else "")
+    def adicionar_contato(nome, telefone):
+        nome = str(nome or "").strip()
+        telefone = limpar_telefone(telefone)
         if not nome or not telefone:
             return
         nome_norm = normalizar_nome(nome)
         if nome_norm and nome_norm not in contatos:
             contatos[nome_norm] = telefone
 
+    def processar_linhas(linhas):
+        linhas = list(linhas)
+        if not linhas:
+            return
+        cab = [normalizar_nome(v) for v in linhas[0]]
+        mapa = {v: i for i, v in enumerate(cab) if v}
+        idx_nome = mapa.get("driver name")
+        idx_tel = mapa.get("phone number")
+        inicio = 1 if idx_nome is not None and idx_tel is not None else 0
+        # Compatibilidade com Database antiga do dashboard: B = nome / I = telefone.
+        if idx_nome is None:
+            idx_nome = 1
+        if idx_tel is None:
+            idx_tel = 8
+        for linha in linhas[inicio:]:
+            linha = list(linha)
+            if len(linha) <= max(idx_nome, idx_tel):
+                continue
+            adicionar_contato(linha[idx_nome], linha[idx_tel])
+
     if nome_arquivo.endswith((".csv", ".txt")):
         conteudo = arquivo.getvalue().decode("utf-8-sig", errors="replace")
-        for linha in csv.reader(StringIO(conteudo)):
-            adicionar_linha(linha)
+        processar_linhas(csv.reader(StringIO(conteudo)))
         return contatos
     if nome_arquivo.endswith((".xlsx", ".xlsm")):
         if openpyxl is None:
             raise ValueError("Para ler XLSX, instale openpyxl: pip install openpyxl")
         wb = openpyxl.load_workbook(BytesIO(arquivo.getvalue()), data_only=True, read_only=True)
         ws = wb.active
-        for row in ws.iter_rows(values_only=True):
-            adicionar_linha(list(row))
+        processar_linhas(ws.iter_rows(values_only=True))
         return contatos
     if nome_arquivo.endswith(".xls"):
         if pd is None:
             raise ValueError("Para ler XLS, instale pandas e xlrd: pip install pandas xlrd")
         df = pd.read_excel(BytesIO(arquivo.getvalue()), header=None)
-        for _, row in df.iterrows():
-            adicionar_linha(row.fillna("").tolist())
+        processar_linhas(df.fillna("").values.tolist())
         return contatos
     raise ValueError("Formato não suportado. Envie .xlsx, .xls ou .csv")
-
 
 def buscar_contato_motorista(nome_motorista, contatos):
     nome_norm = normalizar_nome(nome_motorista)
@@ -4260,6 +4279,185 @@ def render_consolidado():
     render_card_meta("Consolidado", resultado["Consolidado"], "meta-consolidado-fill")
 
 
+
+# =========================================================
+# ACEITE DE ROTAS / WHATSAPP - V1 (PRÉVIA, SEM DISPARO REAL)
+# =========================================================
+def ler_romaneio_aceite(arquivo):
+    """Lê a aba Plano de expedição e retorna Rota, AT, Gaiola e Driver."""
+    if arquivo is None:
+        return []
+    nome = arquivo.name.lower()
+    registros = []
+
+    def adicionar(rota, at, gaiola, driver):
+        driver = str(driver or "").strip()
+        gaiola = str(gaiola or "").strip()
+        if not driver or normalizar_nome(driver) in {"driver planejado", "driver"}:
+            return
+        registros.append({
+            "Rota": str(rota or "").strip(),
+            "AT": str(at or "").strip(),
+            "Gaiola": gaiola,
+            "Driver": driver,
+        })
+
+    if nome.endswith((".xlsx", ".xlsm")):
+        if openpyxl is None:
+            raise ValueError("Para ler o romaneio XLSX, instale openpyxl.")
+        wb = openpyxl.load_workbook(BytesIO(arquivo.getvalue()), data_only=True, read_only=True)
+        alvo = next((x for x in wb.sheetnames if normalizar_nome(x) == "plano de expedicao"), None)
+        if not alvo:
+            raise ValueError("Não encontrei a aba 'Plano de expedição' no romaneio.")
+        ws = wb[alvo]
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            # A=Rota, B=AT/TO, C=Gaiola, W=Driver planejado
+            if len(row) >= 23:
+                adicionar(row[0], row[1], row[2], row[22])
+    elif nome.endswith(".xls"):
+        if pd is None:
+            raise ValueError("Para ler XLS, instale pandas e xlrd.")
+        xls = pd.ExcelFile(BytesIO(arquivo.getvalue()))
+        alvo = next((x for x in xls.sheet_names if normalizar_nome(x) == "plano de expedicao"), None)
+        if not alvo:
+            raise ValueError("Não encontrei a aba 'Plano de expedição' no romaneio.")
+        df = pd.read_excel(BytesIO(arquivo.getvalue()), sheet_name=alvo, header=0)
+        for _, row in df.iterrows():
+            vals = row.fillna("").tolist()
+            if len(vals) >= 23:
+                adicionar(vals[0], vals[1], vals[2], vals[22])
+    else:
+        raise ValueError("O romaneio deve ser .xlsx, .xlsm ou .xls")
+
+    # Remove duplicatas exatas de driver/AT/gaiola sem perder a ordem.
+    unicos, vistos = [], set()
+    for item in registros:
+        chave = (normalizar_nome(item["Driver"]), item["AT"], item["Gaiola"])
+        if chave not in vistos:
+            vistos.add(chave)
+            unicos.append(item)
+    return unicos
+
+
+def mensagem_aceite_driver(nome, gaiola, hub):
+    primeiro_nome = str(nome or "").strip().split()[0].title() if str(nome or "").strip() else "Driver"
+    return f"""🚨 *VOCÊ FOI ESCALADO!!* 🚨
+
+Olá, *{primeiro_nome}*!
+
+Você foi escalado para a rota/gaiola *{gaiola}*.
+
+✅ Se você realmente for comparecer, *ACEITE A ROTA* no seu aplicativo.
+
+❌ Se não conseguir comparecer, *RECUSE A ROTA* no aplicativo e responda esta mensagem explicando o motivo.
+
+⏰ *ATENÇÃO:* você tem *1 HORA a partir do recebimento desta mensagem* para realizar o aceite ou a recusa.
+
+*{hub} | Operação*"""
+
+
+def render_aceite_rotas(hub):
+    html(f'<div class="section-title">📲 Aceite de Rotas - {hub}</div>')
+    st.caption("V1 de validação: cruza o romaneio com a Base de Drivers e prepara os destinatários. Nenhuma mensagem é enviada nesta versão.")
+
+    cbase, crom = st.columns(2)
+    with cbase:
+        st.markdown("#### 1. Base de Drivers")
+        base = st.file_uploader(
+            "Base SPX (.csv, .xlsx ou .xls)",
+            type=["csv", "xlsx", "xls", "xlsm"],
+            key=f"aceite_base_{hub}",
+            help="Na base SPX atual são usados Driver Name e Phone Number."
+        )
+        if st.button("📱 Carregar / atualizar base", key=f"aceite_carregar_base_{hub}", use_container_width=True, type="primary"):
+            try:
+                if base is None:
+                    raise ValueError("Selecione a Base de Drivers.")
+                contatos = carregar_database_arquivo(base)
+                st.session_state.contatos_por_hub[hub] = contatos
+                salvar_estado_persistido(hub)
+                st.success(f"Base carregada: {len(contatos)} drivers com telefone.")
+            except Exception as e:
+                st.error(f"Erro ao carregar a base: {e}")
+
+        qtd_contatos = len(st.session_state.contatos_por_hub.get(hub, {}))
+        st.info(f"📱 Base atualmente disponível para {hub}: **{qtd_contatos} contatos**")
+
+    with crom:
+        st.markdown("#### 2. Romaneio do dia")
+        romaneio = st.file_uploader(
+            "Romaneio (.xlsx, .xlsm ou .xls)",
+            type=["xlsx", "xlsm", "xls"],
+            key=f"aceite_romaneio_{hub}",
+            help="Aba Plano de expedição: A=Rota, B=AT, C=Gaiola e W=Driver planejado."
+        )
+        if st.button("📄 Processar romaneio", key=f"aceite_processar_{hub}", use_container_width=True, type="primary"):
+            try:
+                if romaneio is None:
+                    raise ValueError("Selecione o romaneio do dia.")
+                registros = ler_romaneio_aceite(romaneio)
+                contatos = st.session_state.contatos_por_hub.get(hub, {})
+                cruzados = []
+                for r in registros:
+                    telefone = buscar_contato_motorista(r["Driver"], contatos)
+                    item = dict(r)
+                    item["Telefone"] = telefone
+                    item["Status"] = "✅ Pronto" if telefone else "⚠️ Sem telefone"
+                    item["Selecionar"] = bool(telefone)
+                    cruzados.append(item)
+                st.session_state[f"aceite_cruzados_{hub}"] = cruzados
+                st.session_state[f"aceite_data_{hub}"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+                st.success(f"Romaneio processado: {len(cruzados)} drivers escalados.")
+            except Exception as e:
+                st.error(f"Erro ao processar o romaneio: {e}")
+
+    dados = st.session_state.get(f"aceite_cruzados_{hub}", [])
+    if not dados:
+        st.info("Carregue a Base de Drivers e processe o romaneio para montar a prévia dos disparos.")
+        return
+
+    total = len(dados)
+    prontos = sum(1 for x in dados if x.get("Telefone"))
+    sem_tel = total - prontos
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Escalados", total)
+    m2.metric("Prontos", prontos)
+    m3.metric("Sem telefone", sem_tel)
+    m4.metric("Mensagens enviadas", 0)
+
+    st.markdown("#### 3. Conferência dos drivers")
+    if pd is not None:
+        df = pd.DataFrame(dados)
+        ordem = ["Selecionar", "Rota", "AT", "Gaiola", "Driver", "Telefone", "Status"]
+        df = df[[c for c in ordem if c in df.columns]]
+        editado = st.data_editor(
+            df,
+            hide_index=True,
+            use_container_width=True,
+            disabled=["Rota", "AT", "Gaiola", "Driver", "Telefone", "Status"],
+            key=f"aceite_editor_{hub}"
+        )
+        selecionados = editado[(editado["Selecionar"] == True) & (editado["Telefone"].astype(str) != "")]
+    else:
+        st.dataframe(dados, use_container_width=True)
+        selecionados = []
+
+    st.caption(f"Processado em {st.session_state.get(f'aceite_data_{hub}', '-')}. Selecionados para futura integração: {len(selecionados) if pd is not None else 0}.")
+
+    st.markdown("#### 4. Prévia da mensagem")
+    exemplo = next((x for x in dados if x.get("Telefone")), dados[0])
+    st.text_area(
+        "Mensagem que será personalizada por driver",
+        value=mensagem_aceite_driver(exemplo.get("Driver"), exemplo.get("Gaiola"), hub),
+        height=300,
+        disabled=True,
+        key=f"aceite_preview_{hub}"
+    )
+
+    st.warning("🔒 Disparo real ainda está bloqueado nesta V1. O próximo passo será conectar a API oficial do WhatsApp depois de validar o cruzamento Base × Romaneio.")
+    st.button("📲 DISPARAR COBRANÇA DE ACEITE (V1 - BLOQUEADO)", disabled=True, use_container_width=True, key=f"aceite_disparo_bloqueado_{hub}")
+
+
 # =========================================================
 # ROTEAMENTO FINAL
 # =========================================================
@@ -4298,10 +4496,11 @@ else:
     # Enquanto esta sessão do navegador estiver aberta, verifica a agenda a cada minuto.
     render_motor_atualizacao_automatica(hub_atual)
 
-    aba_dashboard, aba_ranking, aba_inteligencia, aba_config = st.tabs([
+    aba_dashboard, aba_ranking, aba_inteligencia, aba_aceite, aba_config = st.tabs([
         f"📊 Dashboard {hub_atual}",
         f"🏆 Ranking {hub_atual}",
         f"📈 Inteligência {hub_atual}",
+        f"📲 Aceite de Rotas {hub_atual}",
         f"⚙️ Configuração {hub_atual}"
     ])
 
@@ -4313,6 +4512,9 @@ else:
 
     with aba_inteligencia:
         render_inteligencia_operacional(hub_atual)
+
+    with aba_aceite:
+        render_aceite_rotas(hub_atual)
 
     with aba_config:
         render_configuracao_hub(hub_atual)
