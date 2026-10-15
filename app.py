@@ -4471,6 +4471,190 @@ def render_aceite_rotas(hub):
         st.dataframe(hist_exibir, hide_index=True, use_container_width=True)
 
 
+
+# =========================================================
+# CAPTAÇÃO DE DRIVERS (dados autorizados, sem telefones)
+# =========================================================
+import zlib as _capt_zlib
+import sqlite3 as _capt_sqlite
+
+CAPTACAO_DB_PATH = BASE_DIR / "captacao_drivers.sqlite3"
+CAPTACAO_STATUS = ["Não contatado", "Tentativa de contato", "Interessado", "Em negociação", "Captado", "Indisponível"]
+CAPTACAO_PRIORITARIOS = ["Baixa Verde", "Passarinho - 02", "Ouro Preto", "Caixa D'Agua", "Agamenon Magalhães", "Monjope", "Casa Caiada Praia", "Peixinhos", "Nossa Sra. da Conceição", "Igarassu Centro", "Janga", "Jardim Atlântico - z", "Sapucaia", "Águas Compridas"]
+CAPTACAO_SEED = "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"
+
+
+def captacao_conectar():
+    con = _capt_sqlite.connect(str(CAPTACAO_DB_PATH), timeout=15)
+    con.row_factory = _capt_sqlite.Row
+    con.execute("PRAGMA busy_timeout=15000")
+    con.execute("""CREATE TABLE IF NOT EXISTS drivers (
+        driver_id INTEGER PRIMARY KEY, nome TEXT NOT NULL, ats INTEGER NOT NULL DEFAULT 0,
+        clusters TEXT NOT NULL DEFAULT '[]', onboarding INTEGER,
+        atualizado_em TEXT NOT NULL)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS acompanhamento (
+        hub TEXT NOT NULL, driver_id INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'Não contatado',
+        observacao TEXT NOT NULL DEFAULT '', atualizado_em TEXT NOT NULL,
+        PRIMARY KEY (hub, driver_id))""")
+    return con
+
+
+def captacao_importar_registros(registros):
+    if not isinstance(registros, list):
+        raise ValueError("JSON inválido: a lista de motoristas não foi encontrada.")
+    if len(registros) > 10000:
+        raise ValueError("Arquivo excede 10.000 registros por importação.")
+    n = 0
+    with captacao_conectar() as con:
+        for d in registros:
+            if not isinstance(d, dict):
+                continue
+            try:
+                did = int(d.get("driver_id"))
+            except (TypeError, ValueError):
+                continue
+            nome = str(d.get("new_driver_name") or "").strip()[:180]
+            if did <= 0 or not nome:
+                continue
+            ats = max(0, int(d.get("completed_at_count") or 0))
+            clusters = [str(x)[:120] for x in (d.get("clusters") or []) if isinstance(x, str)]
+            onboarding = d.get("onboarding_completion_time")
+            try:
+                onboarding = int(onboarding) if onboarding is not None else None
+            except (TypeError, ValueError):
+                onboarding = None
+            con.execute("""INSERT INTO drivers(driver_id,nome,ats,clusters,onboarding,atualizado_em)
+                VALUES(?,?,?,?,?,?) ON CONFLICT(driver_id) DO UPDATE SET
+                nome=excluded.nome, ats=excluded.ats, clusters=excluded.clusters,
+                onboarding=excluded.onboarding, atualizado_em=excluded.atualizado_em""",
+                (did,nome,ats,json.dumps(clusters,ensure_ascii=False),onboarding,agora_brasil().isoformat()))
+            n += 1
+    return n
+
+
+def captacao_dados_iniciais():
+    with captacao_conectar() as con:
+        qtd = con.execute("SELECT COUNT(*) FROM drivers").fetchone()[0]
+    if not qtd:
+        try:
+            registros = json.loads(_capt_zlib.decompress(base64.b64decode(CAPTACAO_SEED)).decode("utf-8"))
+            captacao_importar_registros(registros)
+        except Exception as exc:
+            safe_log(f"Falha ao carregar amostra inicial de captação: {exc}")
+
+
+def captacao_salvar_status(hub, driver_id, status, observacao):
+    if status not in CAPTACAO_STATUS:
+        raise ValueError("Status inválido")
+    agora = agora_brasil().isoformat()
+    with captacao_conectar() as con:
+        con.execute("""INSERT INTO acompanhamento(hub,driver_id,status,observacao,atualizado_em)
+            VALUES(?,?,?,?,?) ON CONFLICT(hub,driver_id) DO UPDATE SET
+            status=excluded.status, observacao=excluded.observacao,
+            atualizado_em=excluded.atualizado_em""",
+            (hub,int(driver_id),status,str(observacao).strip()[:500],agora))
+
+
+def render_captacao_drivers(hub):
+    st.subheader(f"🎯 Captação de Drivers — {hub}")
+    st.caption("Listagem do SPX importada de JSON autorizado. Telefones e dados protegidos não são armazenados nem consultados por esta aba.")
+    try:
+        captacao_dados_iniciais()
+    except Exception as exc:
+        st.error(f"Não foi possível abrir a base de captação: {exc}")
+        return
+
+    with st.expander("📥 Atualizar a base de motoristas (JSON do SPX)"):
+        st.info("No momento, a atualização é por importação manual de JSON. A integração automática exige acesso oficial/autorizado à API, sem copiar cookies de navegador.")
+        arquivos = st.file_uploader("Arquivos JSON ou TXT da resposta new_driver/list", type=["json", "txt"], accept_multiple_files=True, key=f"capt_upload_{hub}")
+        if st.button("Importar registros", key=f"capt_import_{hub}", disabled=not arquivos):
+            try:
+                total = 0
+                for f in arquivos:
+                    if f.size > 8*1024*1024:
+                        raise ValueError("Cada arquivo deve ter no máximo 8 MB.")
+                    payload = json.loads(f.getvalue().decode("utf-8-sig"))
+                    lista = payload.get("data", {}).get("list") if isinstance(payload, dict) else None
+                    if not isinstance(lista, list):
+                        raise ValueError(f"{f.name}: formato inesperado, faltou data.list")
+                    total += captacao_importar_registros(lista)
+                st.success(f"{total} registros processados. Duplicados foram atualizados por ID; status de captação preservado.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Falha na importação: {exc}")
+
+    with captacao_conectar() as con:
+        rows = con.execute("""SELECT d.driver_id,d.nome,d.ats,d.clusters,d.onboarding,
+            COALESCE(a.status,'Não contatado') AS status, COALESCE(a.observacao,'') AS observacao
+            FROM drivers d LEFT JOIN acompanhamento a ON a.driver_id=d.driver_id AND a.hub=?
+            ORDER BY d.nome""", (hub,)).fetchall()
+    registros = [dict(r) for r in rows]
+    for r in registros:
+        r["clusters_lista"] = json.loads(r.pop("clusters") or "[]")
+    total = len(registros)
+    col1,col2,col3,col4 = st.columns(4)
+    col1.metric("Motoristas na base", total)
+    col2.metric("Com ATs", sum(r["ats"]>0 for r in registros))
+    col3.metric("Sem ATs", sum(r["ats"]==0 for r in registros))
+    col4.metric("Captados neste hub", sum(r["status"]=="Captado" for r in registros))
+    if not registros:
+        st.warning("Nenhum motorista importado.")
+        return
+
+    clusters = sorted({c for r in registros for c in r["clusters_lista"]},key=lambda x:x.casefold())
+    c1,c2,c3,c4 = st.columns([2,2,1.2,1.5])
+    with c1:
+        busca = st.text_input("Buscar motorista ou ID", key=f"capt_busca_{hub}")
+    with c2:
+        cluster = st.selectbox("Cluster", ["Todos"]+clusters, key=f"capt_cluster_{hub}")
+    with c3:
+        filtro_ats = st.selectbox("ATs", ["Todas", "0 ATs", "1+ ATs"], key=f"capt_ats_{hub}")
+    with c4:
+        filtro_status = st.selectbox("Status", ["Todos"]+CAPTACAO_STATUS, key=f"capt_status_{hub}")
+    filtro_prior = st.checkbox("Somente clusters prioritários (histórico de reutilização)", key=f"capt_prior_{hub}")
+
+    filtrados=[]
+    for r in registros:
+        if busca and normalizar_nome(busca) not in normalizar_nome(r["nome"]) and busca.strip() not in str(r["driver_id"]):
+            continue
+        if cluster != "Todos" and cluster not in r["clusters_lista"] and "ALL" not in r["clusters_lista"]:
+            continue
+        if filtro_ats == "0 ATs" and r["ats"] != 0:
+            continue
+        if filtro_ats == "1+ ATs" and r["ats"] == 0:
+            continue
+        if filtro_status != "Todos" and r["status"] != filtro_status:
+            continue
+        if filtro_prior and not any(c in CAPTACAO_PRIORITARIOS for c in r["clusters_lista"]) and "ALL" not in r["clusters_lista"]:
+            continue
+        filtrados.append(r)
+    st.caption(f"{len(filtrados)} motorista(s) encontrados. Um motorista pode atender vários clusters. 'ALL' indica cobertura geral e será incluído no filtro por região.")
+    if not filtrados:
+        st.info("Nenhum motorista corresponde aos filtros.")
+        return
+    visiveis = [{"ID": r["driver_id"],"Motorista":r["nome"],"ATs concluídas":r["ats"],"Clusters":" | ".join(r["clusters_lista"]),"Status":r["status"],"Observações":r["observacao"]} for r in filtrados]
+    st.dataframe(visiveis, use_container_width=True, hide_index=True, height=380)
+    dados_csv = StringIO()
+    gravador = csv.DictWriter(dados_csv, fieldnames=list(visiveis[0]), delimiter=";")
+    gravador.writeheader()
+    gravador.writerows(visiveis)
+    st.download_button("📥 Exportar resultado CSV", data="\ufeff"+dados_csv.getvalue(), file_name=f"captacao_{hub}.csv", mime="text/csv", key=f"capt_csv_{hub}")
+
+    st.markdown("#### Atualizar acompanhamento")
+    id_lookup = {f"{r['nome']} — ID {r['driver_id']}":r for r in filtrados}
+    escolhido = st.selectbox("Selecione o motorista", list(id_lookup), key=f"capt_selecionar_{hub}")
+    driver = id_lookup[escolhido]
+    with st.form(f"capt_form_{hub}_{driver['driver_id']}"):
+        status = st.selectbox("Status da captação", CAPTACAO_STATUS, index=CAPTACAO_STATUS.index(driver["status"]) if driver["status"] in CAPTACAO_STATUS else 0)
+        observacao = st.text_area("Observação operacional (não inclua telefone, CPF ou outros dados pessoais)", value=driver["observacao"], max_chars=500)
+        if st.form_submit_button("💾 Salvar acompanhamento", type="primary"):
+            captacao_salvar_status(hub,driver["driver_id"],status,observacao)
+            st.success("Acompanhamento salvo neste ambiente.")
+            st.rerun()
+    st.info("Para obter o telefone, abra o cadastro individual no SPX e utilize a visualização autorizada. Nenhum número é coletado em lote nesta versão.")
+    st.caption("Armazenamento atual: SQLite local (captacao_drivers.sqlite3). Em hospedagem na nuvem com disco temporário, os registros de acompanhamento podem ser perdidos em reinicializações; para uso multiusuário, migre esta tabela para o Supabase com políticas de acesso por hub.")
+
+
 # =========================================================
 # ROTEAMENTO FINAL
 # =========================================================
@@ -4509,11 +4693,12 @@ else:
     # Enquanto esta sessão do navegador estiver aberta, verifica a agenda a cada minuto.
     render_motor_atualizacao_automatica(hub_atual)
 
-    aba_dashboard, aba_ranking, aba_inteligencia, aba_aceite, aba_config = st.tabs([
+    aba_dashboard, aba_ranking, aba_inteligencia, aba_aceite, aba_captacao, aba_config = st.tabs([
         f"📊 Dashboard {hub_atual}",
         f"🏆 Ranking {hub_atual}",
         f"📈 Inteligência {hub_atual}",
         f"📲 Aceite de Rotas {hub_atual}",
+        f"🎯 Captação {hub_atual}",
         f"⚙️ Configuração {hub_atual}"
     ])
 
@@ -4528,6 +4713,9 @@ else:
 
     with aba_aceite:
         render_aceite_rotas(hub_atual)
+
+    with aba_captacao:
+        render_captacao_drivers(hub_atual)
 
     with aba_config:
         render_configuracao_hub(hub_atual)
