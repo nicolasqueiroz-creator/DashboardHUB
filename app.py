@@ -4499,6 +4499,31 @@ def captacao_conectar():
     return con
 
 
+def captacao_nome_cluster(valor):
+    """Remove numeração de exibição do SPX sem confundir clusters 01/02."""
+    nome = re.sub(r"^\s*\d+\s*[.)]\s*", "", str(valor or "")).strip()
+    nome = re.sub(r"\s+", " ", nome)
+    return nome
+
+
+def captacao_chave_cluster(nome):
+    """Chave estável para consolidar diferenças de caixa, acentos e espaço."""
+    return normalizar_nome(captacao_nome_cluster(nome))
+
+
+def captacao_clusters_unicos(valores):
+    """Padroniza rótulos repetidos mantendo distinção entre Passarinho 01/02."""
+    unicos = {}
+    for valor in valores or []:
+        nome = captacao_nome_cluster(valor)
+        chave = captacao_chave_cluster(nome)
+        if not chave:
+            continue
+        if chave not in unicos:
+            unicos[chave] = nome
+    return list(unicos.values())
+
+
 def captacao_importar_registros(registros):
     if not isinstance(registros, list):
         raise ValueError("JSON inválido: a lista de motoristas não foi encontrada.")
@@ -4517,7 +4542,7 @@ def captacao_importar_registros(registros):
             if did <= 0 or not nome:
                 continue
             ats = max(0, int(d.get("completed_at_count") or 0))
-            clusters = [str(x)[:120] for x in (d.get("clusters") or []) if isinstance(x, str)]
+            clusters = captacao_clusters_unicos([str(x)[:120] for x in (d.get("clusters") or []) if isinstance(x, str)])
             onboarding = d.get("onboarding_completion_time")
             try:
                 onboarding = int(onboarding) if onboarding is not None else None
@@ -4710,7 +4735,7 @@ def render_captacao_drivers(hub):
             ORDER BY d.nome""", (hub,)).fetchall()
     registros = [dict(r) for r in rows]
     for r in registros:
-        r["clusters_lista"] = json.loads(r.pop("clusters") or "[]")
+        r["clusters_lista"] = captacao_clusters_unicos(json.loads(r.pop("clusters") or "[]"))
     total = len(registros)
     col1,col2,col3,col4 = st.columns(4)
     col1.metric("Motoristas na base", total)
@@ -4721,23 +4746,37 @@ def render_captacao_drivers(hub):
         st.warning("Nenhum motorista importado.")
         return
 
-    clusters = sorted({c for r in registros for c in r["clusters_lista"]},key=lambda x:x.casefold())
+    # Dicionário global: cada cluster aparece uma só vez na escolha.
+    nomes_cluster = {}
+    for r in registros:
+        for nome in r["clusters_lista"]:
+            chave = captacao_chave_cluster(nome)
+            if chave and chave != "all":
+                nomes_cluster.setdefault(chave, nome)
+    clusters = sorted(nomes_cluster.values(), key=lambda x: normalizar_nome(x))
     c1,c2,c3,c4 = st.columns([2,2,1.2,1.5])
     with c1:
         busca = st.text_input("Buscar motorista ou ID", key=f"capt_busca_{hub}")
     with c2:
-        cluster = st.selectbox("Cluster", ["Todos"]+clusters, key=f"capt_cluster_{hub}")
+        clusters_escolhidos = st.multiselect(
+            "Escolha os clusters", clusters,
+            placeholder="Selecione um ou mais clusters",
+            key=f"capt_clusters_multiplos_v3_{hub}"
+        )
     with c3:
         filtro_ats = st.selectbox("ATs", ["Todas", "0 ATs", "1+ ATs"], key=f"capt_ats_{hub}")
     with c4:
         filtro_status = st.selectbox("Status", ["Todos"]+CAPTACAO_STATUS, key=f"capt_status_{hub}")
     filtro_prior = st.checkbox("Somente clusters prioritários (histórico de reutilização)", key=f"capt_prior_{hub}")
+    filtro_clusters_chaves = {captacao_chave_cluster(c) for c in clusters_escolhidos}
+    prioritarios_chaves = {captacao_chave_cluster(c) for c in CAPTACAO_PRIORITARIOS}
 
     filtrados=[]
     for r in registros:
         if busca and normalizar_nome(busca) not in normalizar_nome(r["nome"]) and busca.strip() not in str(r["driver_id"]):
             continue
-        if cluster != "Todos" and cluster not in r["clusters_lista"] and "ALL" not in r["clusters_lista"]:
+        chaves_motorista = {captacao_chave_cluster(c) for c in r["clusters_lista"]}
+        if filtro_clusters_chaves and not (filtro_clusters_chaves & chaves_motorista or "all" in chaves_motorista):
             continue
         if filtro_ats == "0 ATs" and r["ats"] != 0:
             continue
@@ -4745,10 +4784,10 @@ def render_captacao_drivers(hub):
             continue
         if filtro_status != "Todos" and r["status"] != filtro_status:
             continue
-        if filtro_prior and not any(c in CAPTACAO_PRIORITARIOS for c in r["clusters_lista"]) and "ALL" not in r["clusters_lista"]:
+        if filtro_prior and not (prioritarios_chaves & chaves_motorista or "all" in chaves_motorista):
             continue
         filtrados.append(r)
-    st.caption(f"{len(filtrados)} motorista(s) encontrados. Um motorista pode atender vários clusters. 'ALL' indica cobertura geral e será incluído no filtro por região.")
+    st.caption(f"{len(filtrados)} motorista(s) encontrados. Você pode selecionar vários clusters; será exibido quem atende pelo menos um deles. 'ALL' indica cobertura geral.")
     if not filtrados:
         st.info("Nenhum motorista corresponde aos filtros.")
         return
