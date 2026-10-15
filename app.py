@@ -4555,6 +4555,124 @@ def captacao_salvar_status(hub, driver_id, status, observacao):
             (hub,int(driver_id),status,str(observacao).strip()[:500],agora))
 
 
+# =========================================================
+# ATUALIZACAO SPX (somente credencial corporativa autorizada)
+# =========================================================
+SPX_DRIVERS_URL = "https://spx.shopee.com.br/api/driverservice/admin/own_fleet/driver/new_driver/list"
+
+
+def captacao_config_api():
+    """Configuracao por secrets: nunca importar cookies do navegador."""
+    try:
+        token = str(st.secrets.get("SPX_API_BEARER_TOKEN", "") or "").strip()
+        url = str(st.secrets.get("SPX_DRIVERS_API_URL", SPX_DRIVERS_URL) or SPX_DRIVERS_URL).strip()
+    except Exception:
+        return "", SPX_DRIVERS_URL
+    parsed = urlparse(url)
+    # Nao permitir URL arbitraria que possa receber a credencial corporativa.
+    if parsed.scheme != "https" or parsed.hostname != "spx.shopee.com.br" or parsed.path != "/api/driverservice/admin/own_fleet/driver/new_driver/list" or parsed.username or parsed.password:
+        raise ValueError("SPX_DRIVERS_API_URL deve apontar para o endpoint oficial HTTPS de novos drivers.")
+    return token, url
+
+
+def captacao_consultar_spx(token, url, limite_paginas=50, tamanho=100):
+    """Leitura paginada; nao solicita dados protegidos nem revela contatos."""
+    if not token:
+        raise ValueError("Credencial SPX_API_BEARER_TOKEN nao configurada.")
+    if not 1 <= limite_paginas <= 100 or not 1 <= tamanho <= 100:
+        raise ValueError("Limites de paginação invalidos.")
+    cabecalhos = {
+        "accept": "application/json",
+        "content-type": "application/json;charset=UTF-8",
+        "app": "FMS Portal",
+        "authorization": f"Bearer {token}",
+    }
+    registros = {}
+    paginas = 0
+    total_remoto = None
+    with requests.Session() as sessao:
+        for pagina in range(1, limite_paginas+1):
+            try:
+                resposta = sessao.post(url, json={"pageno":pagina,"count":tamanho},
+                                     headers=cabecalhos, timeout=(8, 25), allow_redirects=False)
+            except requests.RequestException as exc:
+                raise RuntimeError(f"Falha de conexao na pagina {pagina}: {type(exc).__name__}") from None
+            if resposta.status_code in (301,302,303,307,308,401,403):
+                raise RuntimeError("Acesso nao autorizado pela API do SPX. Verifique se o token oficial suporta este endpoint.")
+            if resposta.status_code != 200:
+                raise RuntimeError(f"API SPX respondeu HTTP {resposta.status_code} na pagina {pagina}.")
+            try:
+                objeto = resposta.json()
+            except ValueError:
+                raise RuntimeError("SPX retornou conteudo que nao e JSON.") from None
+            if not isinstance(objeto,dict) or objeto.get("retcode") != 0:
+                raise RuntimeError(f"SPX recusou a pagina {pagina}: {str(objeto.get('message', 'erro'))[:120] if isinstance(objeto,dict) else 'erro'}")
+            dados = objeto.get("data", {})
+            lista = dados.get("list") if isinstance(dados,dict) else None
+            if not isinstance(lista,list):
+                raise RuntimeError(f"Resposta da pagina {pagina} sem data.list.")
+            if total_remoto is None:
+                total_remoto = int(dados.get("total") or 0)
+            paginas += 1
+            for item in lista:
+                if isinstance(item,dict) and item.get("driver_id"):
+                    # Whitelist explicita: nao armazenar email, cpf, contato ou telefone.
+                    registro = {k:item.get(k) for k in ("driver_id", "new_driver_name", "completed_at_count", "onboarding_completion_time", "clusters")}
+                    registros[str(item["driver_id"])] = registro
+            if not lista or len(lista) < tamanho or (total_remoto and pagina*tamanho >= total_remoto):
+                break
+    return list(registros.values()), paginas, total_remoto
+
+
+def captacao_salvar_log_sync(hub, paginas, qtd, total):
+    with captacao_conectar() as con:
+        con.execute("""CREATE TABLE IF NOT EXISTS sincronizacoes (
+            hub TEXT PRIMARY KEY, atualizado_em TEXT, paginas INTEGER,
+            registros INTEGER, total_remoto INTEGER)""")
+        con.execute("""INSERT INTO sincronizacoes(hub,atualizado_em,paginas,registros,total_remoto)
+            VALUES(?,?,?,?,?) ON CONFLICT(hub) DO UPDATE SET
+            atualizado_em=excluded.atualizado_em, paginas=excluded.paginas,
+            registros=excluded.registros, total_remoto=excluded.total_remoto""",
+            (hub,agora_brasil().isoformat(),paginas,qtd,total))
+
+
+def captacao_render_sincronizacao(hub):
+    with st.expander("🔄 Sincronizar base pelo SPX (acesso corporativo)", expanded=False):
+        st.caption("Conexao opcional via token Bearer corporativo aprovado para esta API. Nao cole cookies, Bash nem tokens de sessao do navegador. A consulta nao acessa numeros de telefone.")
+        try:
+            token,url = captacao_config_api()
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+        with captacao_conectar() as con:
+            con.execute("""CREATE TABLE IF NOT EXISTS sincronizacoes (
+                hub TEXT PRIMARY KEY, atualizado_em TEXT, paginas INTEGER,
+                registros INTEGER, total_remoto INTEGER)""")
+            log_sync=con.execute("SELECT * FROM sincronizacoes WHERE hub=?", (hub,)).fetchone()
+        if log_sync:
+            st.caption(f"Ultima atualizacao: {log_sync['atualizado_em']} | paginas: {log_sync['paginas']} | registros consultados: {log_sync['registros']} | total remoto informado: {log_sync['total_remoto']}")
+        if not token:
+            st.warning("Sincronizacao desativada: falta uma credencial oficial compativel em .streamlit/secrets.toml. A importacao JSON continua funcionando.")
+            with st.popover("Exemplo de configuracao"):
+                st.code('SPX_API_BEARER_TOKEN = "TOKEN_CORPORATIVO_AUTORIZADO"',language="toml")
+                st.caption("Esse e apenas o formato da configuracao; o SPX pode nao oferecer Bearer para esta API. Nao use cookies ou tokens copiados do navegador.")
+            return
+        max_paginas = st.number_input("Maximo de paginas nesta sincronizacao", min_value=1, max_value=100, value=50, step=1, key=f"capt_paginas_{hub}")
+        if st.button("🔄 Buscar motoristas agora", type="primary", key=f"capt_sync_{hub}"):
+            try:
+                with st.spinner("Consultando somente a lista autorizada de novos motoristas..."):
+                    registros, paginas, total = captacao_consultar_spx(token,url,limite_paginas=int(max_paginas))
+                    if not registros:
+                        st.warning("API respondeu sem motoristas. Nenhum dado local foi alterado.")
+                        return
+                    quantidade = captacao_importar_registros(registros)
+                    captacao_salvar_log_sync(hub,paginas,len(registros),total)
+                st.success(f"Sincronizacao concluida: {len(registros)} IDs unicos em {paginas} pagina(s). {quantidade} registros processados; acompanhamento preservado.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Nao foi possivel sincronizar: {exc}")
+
+
 def render_captacao_drivers(hub):
     st.subheader(f"🎯 Captação de Drivers — {hub}")
     st.caption("Listagem do SPX importada de JSON autorizado. Telefones e dados protegidos não são armazenados nem consultados por esta aba.")
@@ -4563,6 +4681,8 @@ def render_captacao_drivers(hub):
     except Exception as exc:
         st.error(f"Não foi possível abrir a base de captação: {exc}")
         return
+
+    captacao_render_sincronizacao(hub)
 
     with st.expander("📥 Atualizar a base de motoristas (JSON do SPX)"):
         st.info("No momento, a atualização é por importação manual de JSON. A integração automática exige acesso oficial/autorizado à API, sem copiar cookies de navegador.")
