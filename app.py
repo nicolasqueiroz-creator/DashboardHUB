@@ -19,6 +19,7 @@ import threading
 import os
 from io import StringIO, BytesIO
 from textwrap import dedent
+from ocorrencias_integracao import render_ocorrencias
 
 try:
     from supabase import create_client
@@ -4860,12 +4861,13 @@ else:
     # Enquanto esta sessão do navegador estiver aberta, verifica a agenda a cada minuto.
     render_motor_atualizacao_automatica(hub_atual)
 
-    aba_dashboard, aba_ranking, aba_inteligencia, aba_aceite, aba_captacao, aba_config = st.tabs([
+    aba_dashboard, aba_ranking, aba_inteligencia, aba_aceite, aba_captacao, aba_ocorrencias, aba_config = st.tabs([
         f"📊 Dashboard {hub_atual}",
         f"🏆 Ranking {hub_atual}",
         f"📈 Inteligência {hub_atual}",
         f"📲 Aceite de Rotas {hub_atual}",
         f"🎯 Captação {hub_atual}",
+        f"📋 Ocorrências {hub_atual}",
         f"⚙️ Configuração {hub_atual}"
     ])
 
@@ -4883,6 +4885,9 @@ else:
 
     with aba_captacao:
         render_captacao_drivers(hub_atual)
+
+    with aba_ocorrencias:
+        render_ocorrencias(hub_atual, get_supabase, usuario_pode_acessar_hub)
 
     with aba_config:
         render_configuracao_hub(hub_atual)
