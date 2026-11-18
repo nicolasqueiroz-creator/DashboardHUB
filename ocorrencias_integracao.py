@@ -64,38 +64,54 @@ def _google_credentials():
 
 
 def _sheet_csv(spreadsheet_id, gid):
+    """Localiza OCORRÊNCIAS pelo título, sem depender do gid copiado no link."""
     cred = _google_credentials()
     if cred:
-        # Busca metadados para resolver o título da aba pelo gid, sem supor seu nome.
         headers = {"Authorization": f"Bearer {cred.token}"}
         root = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
-        meta = requests.get(root, headers=headers, params={"fields": "sheets(properties(sheetId,title))"}, timeout=25)
-        meta.raise_for_status()
-        abas = meta.json().get("sheets", [])
-        title = next((a["properties"]["title"] for a in abas if str(a.get("properties", {}).get("sheetId")) == gid), None)
-        if title is None:
-            raise ValueError(f"A aba gid={gid} não foi encontrada nesse romaneio.")
-        res = requests.get(root + "/values/" + requests.utils.quote(title, safe=""),
-                           headers=headers, params={"valueRenderOption": "FORMATTED_VALUE"}, timeout=40)
-        res.raise_for_status()
-        return res.json().get("values", []), title
-    # Leitura sem credenciais apenas se a empresa já tiver autorizado acesso externo.
+        response = requests.get(root, headers=headers,
+                                params={"fields": "sheets(properties(sheetId,title))"}, timeout=25)
+        response.raise_for_status()
+        sheets = [x.get("properties", {}) for x in response.json().get("sheets", [])]
+        # Exige correspondência exata (normalizada) para evitar importar outra aba por engano.
+        selected = next((x for x in sheets if _norm(x.get("title")) == "OCORRENCIAS"), None)
+        if selected is None:
+            names = ", ".join(x.get("title", "") for x in sheets[:20])
+            raise ValueError(f"Não encontrei a aba OCORRÊNCIAS. Abas disponíveis: {names or 'nenhuma'}. "
+                             "Renomeie a aba para OCORRÊNCIAS e tente novamente.")
+        title = selected["title"]
+        actual_gid = str(selected["sheetId"])
+        # A1 com aspas permite nomes com espaços/acentos e evita URL montada à mão.
+        a1 = "'" + title.replace("'", "''") + "'"
+        response = requests.get(root + "/values/" + requests.utils.quote(a1, safe=""),
+                                headers=headers, params={"valueRenderOption": "FORMATTED_VALUE"}, timeout=40)
+        response.raise_for_status()
+        return response.json().get("values", []), title, actual_gid
+
+    # Planilhas públicas: primeiro consulta o CSV indicado pelo gid.
+    # Para planilhas privadas, credenciais são obrigatórias para identificar título da aba.
     uri = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export"
-    res = requests.get(uri, params={"format": "csv", "gid": gid}, timeout=40)
-    res.raise_for_status()
-    content_type = res.headers.get("Content-Type", "").lower()
-    if "html" in content_type or res.text.lstrip().lower().startswith("<!doctype html"):
-        raise PermissionError("O romaneio não está disponível para leitura anônima. Configure uma conta de serviço autorizada.")
-    return list(csv.reader(StringIO(res.content.decode("utf-8-sig", errors="replace")))), f"gid={gid}"
+    response = requests.get(uri, params={"format": "csv", "gid": gid}, timeout=40)
+    response.raise_for_status()
+    content_type = response.headers.get("Content-Type", "").lower()
+    if "html" in content_type or response.text.lstrip().lower().startswith("<!doctype html"):
+        raise PermissionError("Planilha privada: configure GOOGLE_SERVICE_ACCOUNT no Streamlit Secrets.")
+    return list(csv.reader(StringIO(response.content.decode("utf-8-sig", errors="replace")))), f"gid={gid}", gid
 
 
 def _find_header(rows):
-    for i, row in enumerate(rows[:45]):
+    """Detecta linha de cabeçalho mesmo quando há títulos mesclados acima."""
+    for i, row in enumerate(rows[:100]):
         normalized = [_norm(v) for v in row]
-        hits = sum(any(_norm(x) in normalized for x in choices) for choices in COLUNAS.values())
-        if hits >= 2 and any(x in normalized for x in ["DRIVER", "MOTORISTA", "DRIVER NAME"]):
+        motorista = any(h in {_norm(v) for v in COLUNAS["motorista"]} for h in normalized)
+        motivo = any(h in {_norm(v) for v in COLUNAS["ocorrencia"]} for h in normalized)
+        if motorista and motivo:
             return i
-    raise ValueError("Não encontrei os cabeçalhos da aba de ocorrências. Confira o gid ou selecione a aba correta.")
+    # Falha amigável: expõe diagnóstico sem derrubar o Streamlit.
+    sample = " | ".join(" / ".join(str(x) for x in r[:8]) for r in rows[:6])[:700]
+    raise ValueError("A aba OCORRÊNCIAS foi encontrada, mas não localizei as colunas "
+                     "Motorista e Ocorrência/Motivo nas primeiras 100 linhas. "
+                     f"Amostra para conferência: {sample or 'aba vazia'}")
 
 
 def _guess_columns(headers):
@@ -180,18 +196,22 @@ def render_ocorrencias(hub, get_supabase, usuario_pode_acessar_hub):
         with c:
             dia = st.date_input("Data do romaneio", value=date.today(), format="DD/MM/YYYY", key=f"occ_dia_{hub}")
         with d:
-            st.caption("Atenção: o link deve apontar para a aba de ocorrências. Se apontar para outra aba, altere o gid no Google Sheets.")
+            st.markdown("**📌 Instruções para importar**")
+            st.caption("1. Compartilhe o romaneio com o e-mail abaixo, como **Leitor**:")
+            st.code("spx-ocorrencias@spx-intelligence.iam.gserviceaccount.com", language=None)
+            st.caption("2. Deixe o nome da aba exatamente como **OCORRÊNCIAS** (com acento). "
+                       "O sistema localizará a aba automaticamente, sem depender do gid do link.")
         if st.button("🔎 Ler e conferir ocorrências", key=f"occ_fetch_{hub}", type="primary"):
             try:
                 spreadsheet_id, gid = parse_google_link(url)
                 with st.spinner("Lendo romaneio com acesso somente-leitura..."):
-                    rows, nome_aba = _sheet_csv(spreadsheet_id, gid)
+                    rows, nome_aba, gid_real = _sheet_csv(spreadsheet_id, gid)
                     idx = _find_header(rows)
                     headers = [str(x).strip() or f"Coluna_{i+1}" for i, x in enumerate(rows[idx])]
                 st.session_state[f"occ_preview_{hub}"] = {
                     "rows": rows, "idx": idx, "headers": headers,
                     "mapping": _guess_columns(headers), "sheet_id": spreadsheet_id,
-                    "gid": gid, "nome_aba": nome_aba,
+                    "gid": gid_real, "nome_aba": nome_aba,
                     "ciclo": ciclo, "dia": dia.isoformat(), "url": url,
                 }
                 st.success(f"Aba identificada: {nome_aba}. Selecione os campos e confira a prévia.")
