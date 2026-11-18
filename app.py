@@ -63,46 +63,30 @@ def _google_credentials():
     return credentials
 
 
-def _aba_ocorrencias(abas):
-    """Seleciona exclusivamente a aba OCORRÊNCIAS, tolerando acentos e espaços."""
-    for aba in abas:
-        props = aba.get("properties", {})
-        if _norm(props.get("title", "")) == "OCORRENCIAS":
-            return props
-    nomes = ", ".join(a.get("properties", {}).get("title", "") for a in abas)
-    raise ValueError(
-        "Não encontrei uma aba chamada OCORRÊNCIAS. "
-        f"Abas disponíveis: {nomes or '(nenhuma)'}. "
-        "Renomeie a aba de registros para OCORRÊNCIAS."
-    )
-
-
 def _sheet_csv(spreadsheet_id, gid):
-    """Retorna linhas, título e gid efetivo da aba OCORRÊNCIAS."""
     cred = _google_credentials()
     if cred:
+        # Busca metadados para resolver o título da aba pelo gid, sem supor seu nome.
         headers = {"Authorization": f"Bearer {cred.token}"}
         root = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
-        meta = requests.get(root, headers=headers,
-                            params={"fields": "sheets(properties(sheetId,title))"}, timeout=25)
+        meta = requests.get(root, headers=headers, params={"fields": "sheets(properties(sheetId,title))"}, timeout=25)
         meta.raise_for_status()
-        props = _aba_ocorrencias(meta.json().get("sheets", []))
-        title = props["title"]
-        gid_efetivo = str(props["sheetId"])
-        # O título pode conter espaços, acentos ou apóstrofos.
-        intervalo = "'" + title.replace("'", "''") + "'"
-        res = requests.get(root + "/values/" + requests.utils.quote(intervalo, safe=""),
+        abas = meta.json().get("sheets", [])
+        title = next((a["properties"]["title"] for a in abas if str(a.get("properties", {}).get("sheetId")) == gid), None)
+        if title is None:
+            raise ValueError(f"A aba gid={gid} não foi encontrada nesse romaneio.")
+        res = requests.get(root + "/values/" + requests.utils.quote(title, safe=""),
                            headers=headers, params={"valueRenderOption": "FORMATTED_VALUE"}, timeout=40)
         res.raise_for_status()
-        return res.json().get("values", []), title, gid_efetivo
-    # Fallback: somente para planilhas autorizadas para exportação anônima.
+        return res.json().get("values", []), title
+    # Leitura sem credenciais apenas se a empresa já tiver autorizado acesso externo.
     uri = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export"
     res = requests.get(uri, params={"format": "csv", "gid": gid}, timeout=40)
     res.raise_for_status()
     content_type = res.headers.get("Content-Type", "").lower()
     if "html" in content_type or res.text.lstrip().lower().startswith("<!doctype html"):
-        raise PermissionError("Configure a conta de serviço do Google para identificar e ler a aba OCORRÊNCIAS.")
-    return list(csv.reader(StringIO(res.content.decode("utf-8-sig", errors="replace")))), f"gid={gid}", gid
+        raise PermissionError("O romaneio não está disponível para leitura anônima. Configure uma conta de serviço autorizada.")
+    return list(csv.reader(StringIO(res.content.decode("utf-8-sig", errors="replace")))), f"gid={gid}"
 
 
 def _find_header(rows):
@@ -196,27 +180,21 @@ def render_ocorrencias(hub, get_supabase, usuario_pode_acessar_hub):
         with c:
             dia = st.date_input("Data do romaneio", value=date.today(), format="DD/MM/YYYY", key=f"occ_dia_{hub}")
         with d:
-            st.markdown("**📌 Instruções para importar ocorrências**")
-            st.markdown(
-                "1. Compartilhe o romaneio com **`spx-ocorrencias@spx-intelligence.iam.gserviceaccount.com`** "
-                "com permissão de **Leitor** (se autorizado pela empresa).\n"
-                "2. Mantenha a aba de registros com o nome **OCORRÊNCIAS**. "
-                "O sistema encontra a aba automaticamente, mesmo quando o link aponta para outra aba."
-            )
+            st.caption("Atenção: o link deve apontar para a aba de ocorrências. Se apontar para outra aba, altere o gid no Google Sheets.")
         if st.button("🔎 Ler e conferir ocorrências", key=f"occ_fetch_{hub}", type="primary"):
             try:
                 spreadsheet_id, gid = parse_google_link(url)
                 with st.spinner("Lendo romaneio com acesso somente-leitura..."):
-                    rows, nome_aba, gid_efetivo = _sheet_csv(spreadsheet_id, gid)
+                    rows, nome_aba = _sheet_csv(spreadsheet_id, gid)
                     idx = _find_header(rows)
                     headers = [str(x).strip() or f"Coluna_{i+1}" for i, x in enumerate(rows[idx])]
                 st.session_state[f"occ_preview_{hub}"] = {
                     "rows": rows, "idx": idx, "headers": headers,
                     "mapping": _guess_columns(headers), "sheet_id": spreadsheet_id,
-                    "gid": gid_efetivo, "nome_aba": nome_aba,
+                    "gid": gid, "nome_aba": nome_aba,
                     "ciclo": ciclo, "dia": dia.isoformat(), "url": url,
                 }
-                st.success(f"Aba identificada automaticamente: {nome_aba} (gid={gid_efetivo}). Selecione os campos e confira a prévia.")
+                st.success(f"Aba identificada: {nome_aba}. Selecione os campos e confira a prévia.")
             except Exception as exc:
                 st.session_state.pop(f"occ_preview_{hub}", None)
                 st.error(f"Não foi possível ler o romaneio: {exc}")
