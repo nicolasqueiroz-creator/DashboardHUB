@@ -15,7 +15,8 @@ import requests
 import streamlit as st
 
 COLUNAS = {
-    "motorista": ["DRIVER", "DRIVER NAME", "MOTORISTA", "NOME DO MOTORISTA", "NOME DRIVER"],
+    # No romaneio PM, a coluna de motoristas chama-se NOME.
+    "motorista": ["NOME", "DRIVER", "DRIVER NAME", "MOTORISTA", "NOME DO MOTORISTA", "NOME DRIVER"],
     "ocorrencia": ["OCORRENCIA", "OCORRÊNCIA", "MOTIVO", "TIPO DE OCORRENCIA", "STATUS OCORRENCIA"],
     "data_ocorrencia": ["DATA", "DATA OCORRENCIA", "DATA DA OCORRENCIA", "DATE"],
     "turno": ["TURNO", "CICLO", "SHIFT"],
