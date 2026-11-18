@@ -5,3 +5,4 @@ openpyxl
 numpy
 supabase
 xlsxwriter
+google-auth>=2.0.0
